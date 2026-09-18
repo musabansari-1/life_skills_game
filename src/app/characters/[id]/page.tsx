@@ -1,11 +1,10 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { NPCS } from "@/content/npcs";
-import { QUESTS } from "@/content/quests";
 import { getWorld } from "@/content/worlds";
-import { getCurrentPlayer } from "@/server/auth";
+import { getCurrentPlayer } from "@/server/session";
 import { getGame } from "@/server/context";
-import { buildDossier } from "@/server/game-view";
+import { dossierView } from "@/server/queries";
 import { Orb } from "@/components/Orb";
 import { TopBar } from "@/components/TopBar";
 
@@ -24,11 +23,10 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
   const player = await getCurrentPlayer(db);
   if (!player) redirect("/");
   const state = await game.getPlayerState(player.playerId);
-  const d = buildDossier(state, id)!;
+  // Same payload as GET /api/v1/characters/:id.
+  const d = dossierView(state, id);
   const world = getWorld(npc.worldId);
-  const history = [...state.world.completedQuests, ...state.world.failedQuests]
-    .filter((q) => QUESTS.find((x) => x.id === q.questId)?.npcId === id)
-    .sort((a, b) => a.at.localeCompare(b.at));
+  const history = d.history;
 
   return (
     <main className="flex-1 flex flex-col">
@@ -103,18 +101,14 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
               <section className="card p-5">
                 <p className="eyebrow mb-2">History</p>
                 <ol className="space-y-2 text-sm">
-                  {history.map((h) => {
-                    const q = QUESTS.find((x) => x.id === h.questId);
-                    const o = q?.outcomes.find((x) => x.id === h.outcomeId);
-                    return (
-                      <li key={h.attemptId} className="flex justify-between gap-3">
-                        <Link href={`/results/${h.attemptId}`} className="text-paper hover:text-brass-2">
-                          {q?.title}
-                        </Link>
-                        <span className="text-paper-3">{o?.label}</span>
-                      </li>
-                    );
-                  })}
+                  {history.map((h) => (
+                    <li key={h.attemptId} className="flex justify-between gap-3">
+                      <Link href={`/results/${h.attemptId}`} className="text-paper hover:text-brass-2">
+                        {h.questTitle}
+                      </Link>
+                      <span className="text-paper-3">{h.outcomeLabel}</span>
+                    </li>
+                  ))}
                 </ol>
               </section>
             )}

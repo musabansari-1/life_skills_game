@@ -8,25 +8,19 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Orb } from "@/components/Orb";
-import type { Evaluation } from "@/engine/types/evaluation";
-import type { QuestResult } from "@/engine/types/quest";
+import type { Debrief } from "@/contracts/api";
+import { createGameClient } from "@/client/gameClient";
 
 interface Props {
-  quest: { id: string; title: string };
-  npc: { id: string; name: string; shortName: string; appearance: { hue: number; initials: string } };
-  result: QuestResult;
-  evaluation: Evaluation;
-  objectives: { id: string; label: string; kind: "primary" | "hidden" | "optional" }[];
-  skillLabels: Record<string, string>;
-  playerTurnTexts: Record<number, string>;
-  nextQuest: { id: string; title: string; tagline: string; npcName: string; isFollowUp: boolean } | null;
-  /** Player-facing descriptions of what changed in the world. */
-  worldChanges: string[];
+  /** Same payload a native client gets from GET /api/v1/attempts/:id/result. */
+  debrief: Debrief;
 }
 
 const GRADE_COPY = { success: "Mission complete", partial: "Mission resolved", failure: "Mission failed" } as const;
 
-export function ResultReveal({ quest, npc, result, evaluation, objectives, skillLabels, playerTurnTexts, nextQuest, worldChanges }: Props) {
+export function ResultReveal({ debrief }: Props) {
+  const { quest, npc, evaluation, objectives, skillLabels, playerTurnTexts, nextQuest, worldChanges } = debrief;
+  const result = debrief;
   const [stage, setStage] = useState(0);
   const [shared, setShared] = useState(false);
   useEffect(() => {
@@ -35,7 +29,7 @@ export function ResultReveal({ quest, npc, result, evaluation, objectives, skill
   }, []);
   const show = (n: number) => (stage >= n ? "fade-up" : "opacity-0");
   const rel = result.rewards.relationshipChanges.find((r) => r.npcId === npc.id);
-  const achieved = new Set(result.objectivesAchieved);
+  const achieved = new Set(objectives.filter((o) => o.achieved).map((o) => o.id));
 
   async function share() {
     const text = `${result.shareCard.title}\n${result.shareCard.lines.map((l) => `${l.label}: ${l.before} → ${l.after}`).join("\n")}\n${result.shareCard.levelChanges.map((l) => `${skillLabels[l.skill] ?? l.skill} LVL ${l.before} → ${l.after}`).join("\n")}\n“${result.shareCard.headline}”`;
@@ -43,7 +37,7 @@ export function ResultReveal({ quest, npc, result, evaluation, objectives, skill
       if (navigator.share) await navigator.share({ title: result.shareCard.title, text });
       else await navigator.clipboard.writeText(text);
       setShared(true);
-      void fetch("/api/events/share", { method: "POST", body: JSON.stringify({ questId: quest.id }) }).catch(() => {});
+      void createGameClient({ baseUrl: "" }).trackShare(quest.id).catch(() => {});
     } catch {
       /* cancelled */
     }

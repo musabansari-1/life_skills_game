@@ -2,7 +2,7 @@
 
 This phase built the architecture, the core systems, and one end-to-end vertical slice (**The Counter Offer**). This document tells the next engineer/model how to continue without damaging the foundations.
 
-Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`.
+Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. The client/API boundary for web + future native apps is in `MOBILE-ARCHITECTURE.md`.
 
 ## Run it
 
@@ -10,10 +10,11 @@ Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`.
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 70 unit + integration tests, no model calls
+pnpm test                         # 87 unit + integration tests, no model calls
 pnpm smoke                        # full loop against the configured provider, in-memory DB
 pnpm smoke aggressive             # the hostile path
 npx tsx scripts/e2e-walkthrough.ts   # Playwright UI walkthrough using local Chrome (dev server must be running)
+pnpm smoke:api                    # plays the game over /api/v1 with bearer tokens, like a native app (dev server must be running)
 ```
 
 Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `claude-opus-5`), or `AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY` + `AI_MODEL=<slug>`. `AI_PROVIDER=fake` runs the whole game deterministically with heuristics — good for UI work.
@@ -38,6 +39,8 @@ Verified in this phase:
 7. **Memory is structured.** Never store transcripts in `NPCMemory`. Extract → merge.
 8. **Content is code.** Quests/NPCs/worlds are typed objects in `src/content`; `validateContent()` runs in tests. Keep predicates pure.
 9. **Every persistent change emits an event.** Use `analytics.track` (DB + console) — it is also the game's history.
+10. **Clients talk to the game only through `/api/v1` and `src/contracts/api.ts`.** No game rule runs on a client. Web pages may call `server/queries.ts` directly (same DTOs). Contract changes within v1 are additive only.
+11. **Mutations must be retry-safe.** Turns use `expectedTurnCount`; conclude is claimed atomically and commits in one transaction. Keep it that way for any new mutating endpoint.
 
 ## Where things are
 
@@ -54,6 +57,7 @@ Verified in this phase:
 | Schema change | edit `src/db/schema.ts`, run `pnpm db:generate`, commit the migration in `drizzle/` |
 | Game loop | `src/server/orchestrator.ts` |
 | Screens | `src/app/{world,quests,play,results,characters}` |
+| Add an API endpoint | schema in `src/contracts/api.ts` → read model in `src/server/queries.ts` (or a `GameService` method) → route in `src/app/api/v1/` → method in `src/client/gameClient.ts` → test |
 
 ## Known gaps and TODOs (prioritised)
 
@@ -64,7 +68,7 @@ Verified in this phase:
 4. **Commitment follow-through.** `world.commitments` are recorded (Push Back on a Deadline creates one). Nothing yet resolves them or builds a quest around a broken promise. Add a quest with `prerequisites: [{type:"custom", check: ctx => ctx.world.commitments.some(c => c.status==="open" && c.toNpcId==="rohan_mehta")}]` and a `world.commitment.resolve` consequence.
 
 **Robustness**
-5. Concluding a quest is several DB writes without a transaction (libsql batch/transaction support is available; wrap `concludeQuest` persistence in `db.transaction`).
+5. ~~Concluding a quest without a transaction~~ — done: atomic claim + single transaction (see `MOBILE-ARCHITECTURE.md` §9). Remaining: make conclude an async job for mobile (see its Fable escalation note).
 6. The `perceive` fallback and `inferMovesFromSpeech` are safety nets for weak models. With Claude they rarely fire; check `ai_calls.problems` to see how often they do.
 7. `evaluate` on reasoning-heavy open models can take >60 s. Route handlers set `maxDuration = 120`; on serverless hosts consider a background job + polling for the results screen.
 8. Rate limiting and abuse protection on API routes (none yet).

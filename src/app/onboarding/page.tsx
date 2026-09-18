@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getCurrentPlayer } from "@/server/auth";
+import { getCurrentPlayer } from "@/server/session";
 import { getGame } from "@/server/context";
 import { OnboardingForm } from "./OnboardingForm";
 

@@ -2,6 +2,11 @@
 /**
  * Turn-taking state machine for a spoken scene.
  *
+ * Platform-neutral: no DOM or browser APIs here. Speech providers are injected
+ * (web: src/voice/browser.ts via createBrowserVoiceProviders; React Native:
+ * wrappers around expo-speech / a native STT module implementing the same
+ * interfaces). The server is reached only through the injected `sendTurn`.
+ *
  *   idle ──(hold/tap mic)──▶ listening ──(release/stop)──▶ thinking ──▶ speaking ──▶ idle
  *                                                                        │
  *                               (barge-in: mic pressed while speaking) ◀─┘
@@ -10,8 +15,8 @@
  * starts before generation finishes. Audio providers are injected; the hook
  * never touches the network — the caller supplies `sendTurn`.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BrowserSpeechRecognizer, BrowserSpeechSynthesizer, NullSpeechSynthesizer } from "./browser";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { takeSpeakableChunks } from "./chunker";
 import type { SpeechRecognizer, SpeechSynthesizer, VoiceProfile, VoiceState } from "./types";
 
 export interface UseVoiceSessionOptions {
@@ -20,8 +25,10 @@ export interface UseVoiceSessionOptions {
   sendTurn: (text: string, modality: "voice" | "text", onSpeech: (speechSoFar: string, done: boolean) => void) => Promise<void>;
   /** Text-only mode: no TTS, no mic. */
   textOnly?: boolean;
-  recognizer?: SpeechRecognizer;
-  synthesizer?: SpeechSynthesizer;
+  /** Speech-to-text provider (null when unavailable on this platform). */
+  recognizer: SpeechRecognizer | null;
+  /** Text-to-speech provider. */
+  synthesizer: SpeechSynthesizer;
 }
 
 export interface VoiceSessionApi {
@@ -40,20 +47,14 @@ export interface VoiceSessionApi {
   textOnly: boolean;
 }
 
-const SENTENCE_RE = /[^.!?…]+[.!?…]+["')\]]*\s*|[^.!?…]+$/g;
-
 export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
   const [state, setState] = useState<VoiceState>("idle");
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [textOnly, setTextOnly] = useState(!!opts.textOnly);
 
-  const recognizer = useMemo(() => opts.recognizer ?? (typeof window !== "undefined" ? new BrowserSpeechRecognizer() : null), [opts.recognizer]);
-  const synth = useMemo<SpeechSynthesizer>(() => {
-    if (opts.synthesizer) return opts.synthesizer;
-    if (typeof window === "undefined") return new NullSpeechSynthesizer();
-    return new BrowserSpeechSynthesizer();
-  }, [opts.synthesizer]);
+  const recognizer = opts.recognizer;
+  const synth = opts.synthesizer;
 
   const stateRef = useRef<VoiceState>("idle");
   const setS = useCallback((s: VoiceState) => {
@@ -92,14 +93,10 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
   const enqueueSpeech = useCallback(
     (speechSoFar: string, done: boolean, gen: number) => {
       if (textOnlyRef.current || !synth.available) return;
-      const unread = speechSoFar.slice(spokenUpToRef.current);
-      const sentences = unread.match(SENTENCE_RE) ?? [];
       // Only speak complete sentences unless generation is done.
-      const complete = done ? sentences : sentences.filter((s) => /[.!?…]["')\]]*\s*$/.test(s));
-      for (const s of complete) {
-        queueRef.current.push(s.trim());
-        spokenUpToRef.current += s.length;
-      }
+      const { chunks, consumed } = takeSpeakableChunks(speechSoFar, spokenUpToRef.current, done);
+      queueRef.current.push(...chunks);
+      spokenUpToRef.current = consumed;
       if (queueRef.current.length) void drainQueue(gen);
     },
     [synth, drainQueue],

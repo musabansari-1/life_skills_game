@@ -33,6 +33,7 @@ See `.env.example` for all options.
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm smoke [evidence\|aggressive]` | Run the whole Counter Offer loop against the configured provider in an in-memory DB |
 | `npx tsx scripts/e2e-walkthrough.ts` | Playwright walkthrough of the UI using local Chrome (dev server must be running) |
+| `pnpm smoke:api` | Play the game over `/api/v1` with bearer tokens, as a native app would (dev server must be running) |
 | `pnpm db:generate` | Generate a migration after editing `src/db/schema.ts` |
 | `pnpm db:migrate` | Apply migrations to `DATABASE_URL` |
 
@@ -41,6 +42,7 @@ See `.env.example` for all options.
 - `ARCHITECTURE.md` — how the systems fit together (engine, AI layer, memory, competency, world state, voice)
 - `DEVELOPMENT-HANDOFF.md` — invariants, known gaps, prioritised TODOs, trade-offs
 - `docs/ADDING-CONTENT.md` — how to add quests, NPCs, worlds and AI tasks
+- `MOBILE-ARCHITECTURE.md` — API boundary, shared contracts, auth and voice for future iOS/Android clients
 
 ## Layout
 
@@ -48,6 +50,8 @@ See `.env.example` for all options.
 src/engine    deterministic game logic (pure, tested)
 src/ai        provider-swappable model layer + task prompt contracts
 src/content   worlds, NPCs, quests (typed config)
+src/contracts public /api/v1 schemas shared by server and all clients
+src/client    platform-neutral API SDK (web now, React Native later)
 src/server    orchestrator (game loop), auth, analytics, view models
 src/db        drizzle schema + client; migrations in ./drizzle
 src/voice     speech input/output contracts, browser implementations, turn-taking hook

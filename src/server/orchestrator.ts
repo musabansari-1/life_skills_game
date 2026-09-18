@@ -11,7 +11,7 @@
  * The orchestrator is written against injected dependencies (`GameDeps`) so
  * the full loop runs in tests on an in-memory DB with the fake provider.
  */
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, lt, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { dialogueTurns, questAttempts } from "@/db/schema";
 import { getNPC } from "@/content/npcs";
@@ -46,10 +46,25 @@ export interface GameDeps {
   env?: EngineEnv;
 }
 
+/** An "evaluating" claim older than this is presumed abandoned by a crashed request. */
+const EVALUATION_STALE_MS = 5 * 60_000;
+
+/** A player turn with no NPC reply older than this is treated as orphaned (server crashed mid-reply). */
+const ORPHAN_TURN_MS = 120_000;
+
+/** Drizzle wraps driver errors; the SQLite/Postgres unique-violation text lives somewhere in the cause chain. */
+function isUniqueViolation(err: unknown): boolean {
+  for (let e: unknown = err, depth = 0; e && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
+    const x = e as { message?: string; code?: string };
+    if (/UNIQUE constraint|duplicate key|SQLITE_CONSTRAINT/i.test(`${x.code ?? ""} ${x.message ?? ""}`)) return true;
+  }
+  return false;
+}
+
 export class GameError extends Error {
   constructor(
     message: string,
-    public readonly code: "not_found" | "forbidden" | "prerequisites" | "state" | "ai",
+    public readonly code: "not_found" | "forbidden" | "prerequisites" | "state" | "conflict" | "ai",
   ) {
     super(message);
   }
@@ -152,6 +167,7 @@ export class GameService {
     text: string,
     modality: "voice" | "text",
     onSpeech?: (speechSoFar: string, done: boolean) => void,
+    opts: { expectedTurnCount?: number } = {},
   ): Promise<{ attempt: AttemptView; npcText: string }> {
     const row = await this.requireAttempt(playerId, attemptId);
     if (row.status !== "active") throw new GameError("This conversation has ended.", "state");
@@ -163,8 +179,32 @@ export class GameService {
     const cleaned = text.trim().slice(0, 2000);
     if (!cleaned) throw new GameError("Say something first.", "state");
 
+    // Retry/concurrency safety for flaky (mobile) networks and multiple devices:
+    // - a client that has seen a different number of turns must resync, not append;
+    // - if the last turn is the player's, a reply is still being generated.
+    const last = turns.at(-1);
+    if (last?.speaker === "player") {
+      const ageMs = Date.parse(this.env.now()) - Date.parse(last.createdAt);
+      if (ageMs < ORPHAN_TURN_MS) throw new GameError(`${npcDef.shortName} is still replying to your last line.`, "conflict");
+      // Orphaned by a crash mid-generation: drop it so the scene can continue.
+      await this.deps.db.delete(dialogueTurns).where(eq(dialogueTurns.id, last.id));
+      turns.pop();
+    }
+    if (opts.expectedTurnCount !== undefined && opts.expectedTurnCount !== turns.length) {
+      throw new GameError("The conversation moved on since you last saw it. Refresh and try again.", "conflict");
+    }
+
     const playerIdx = turns.length;
-    const playerTurn = await this.appendTurn(attemptId, playerIdx, "player", cleaned, modality, null);
+    let playerTurn: DialogueTurn;
+    try {
+      playerTurn = await this.appendTurn(attemptId, playerIdx, "player", cleaned, modality, null);
+    } catch (err) {
+      // Unique (attempt, idx) violation: another request appended this turn first.
+      if (isUniqueViolation(err)) {
+        throw new GameError("That line was already sent.", "conflict");
+      }
+      throw err;
+    }
     turns.push(playerTurn);
 
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = {
@@ -228,7 +268,19 @@ export class GameService {
     if (playerTurns === 0) throw new GameError("Say at least one thing before concluding.", "state");
 
     const scene = row.scene.ended ? row.scene : endSceneByPlayer(row.scene);
-    await this.deps.db.update(questAttempts).set({ status: "evaluating", scene, updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
+
+    // Claim the attempt atomically so concurrent or retried concludes (common on
+    // mobile: a 60-120 s request times out and the app retries) can't evaluate
+    // twice and apply rewards/consequences twice. A claim older than
+    // EVALUATION_STALE_MS is presumed dead (server crashed) and may be re-claimed.
+    const staleBefore = new Date(Date.parse(this.env.now()) - EVALUATION_STALE_MS).toISOString();
+    const claim = await this.deps.db
+      .update(questAttempts)
+      .set({ status: "evaluating", scene, updatedAt: this.env.now() })
+      .where(and(eq(questAttempts.id, attemptId), or(eq(questAttempts.status, "active"), and(eq(questAttempts.status, "evaluating"), lt(questAttempts.updatedAt, staleBefore)))));
+    if (claim.rowsAffected !== 1) {
+      throw new GameError("Still weighing how that went. Check back in a moment.", "conflict");
+    }
 
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene, world: state.world, npc, playerName: state.displayName };
 
@@ -317,14 +369,15 @@ export class GameService {
       shareCard: buildShareCard(quest, sceneCtx, evaluation, comp.xpAwards, levelsBefore, state.competencies, comp.profile),
     };
 
+    // All persistent effects of the conclusion commit together, or not at all.
     const now = this.env.now();
-    await saveWorldState(this.deps.db, playerId, world);
-    await saveCompetencies(this.deps.db, playerId, comp.profile);
-    for (const n of Object.values(touchedNpcs)) await saveNpcState(this.deps.db, playerId, n);
-    await this.deps.db
-      .update(questAttempts)
-      .set({ status: "completed", scene, evaluation, result, endedAt: now, updatedAt: now })
-      .where(eq(questAttempts.id, attemptId));
+    await this.deps.db.transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      await saveWorldState(t, playerId, world);
+      await saveCompetencies(t, playerId, comp.profile);
+      for (const n of Object.values(touchedNpcs)) await saveNpcState(t, playerId, n);
+      await t.update(questAttempts).set({ status: "completed", scene, evaluation, result, endedAt: now, updatedAt: now }).where(eq(questAttempts.id, attemptId));
+    });
 
     // 7. Events.
     const a = this.deps.analytics;

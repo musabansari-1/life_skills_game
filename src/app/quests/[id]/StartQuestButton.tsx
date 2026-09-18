@@ -1,21 +1,21 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { createGameClient } from "@/client/gameClient";
 
 export function StartQuestButton({ questId, npcName }: { questId: string; npcName: string }) {
   const router = useRouter();
   const [pending, setPending] = useState<null | "voice" | "text">(null);
   const [error, setError] = useState<string | null>(null);
+  const api = useMemo(() => createGameClient({ baseUrl: "" }), []);
 
   async function start(modality: "voice" | "text") {
     setPending(modality);
     setError(null);
     try {
-      const res = await fetch(`/api/quests/${questId}/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modality }) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Couldn't start the scene.");
-      router.push(`/play/${json.attemptId}?mode=${modality}`);
+      const { attempt } = await api.startQuest(questId, modality);
+      router.push(`/play/${attempt.id}?mode=${modality}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start the scene.");
       setPending(null);

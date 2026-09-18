@@ -4,10 +4,9 @@ import { NPCS } from "@/content/npcs";
 import { findQuest } from "@/content/quests";
 import { getLocation, getWorld } from "@/content/worlds";
 import { SKILLS } from "@/engine/types/skills";
-import { checkPrerequisites } from "@/engine/world";
-import { getCurrentPlayer } from "@/server/auth";
+import { getCurrentPlayer } from "@/server/session";
 import { getGame } from "@/server/context";
-import { buildDossier } from "@/server/game-view";
+import { questBriefing } from "@/server/queries";
 import { TopBar } from "@/components/TopBar";
 import { Orb } from "@/components/Orb";
 import { StartQuestButton } from "./StartQuestButton";
@@ -26,18 +25,16 @@ export default async function QuestBriefingPage({ params }: PageProps<"/quests/[
   const { db, game } = await getGame();
   const player = await getCurrentPlayer(db);
   if (!player) redirect("/");
-  const state = await game.getPlayerState(player.playerId);
-  const prereq = checkPrerequisites(quest.prerequisites, { world: state.world, competencies: state.competencies, npcs: state.npcs });
+  // Same payload as GET /api/v1/quests/:id.
+  const b = await questBriefing(game, player.playerId, quest.id);
   const npc = NPCS[quest.npcId];
-  const dossier = buildDossier(state, quest.npcId)!;
+  const dossier = b.npc;
   const world = getWorld(quest.worldId);
   const location = getLocation(quest.locationId);
-  const previous = [...state.world.completedQuests, ...state.world.failedQuests].filter((q) => q.questId === quest.id);
-  const lastOutcome = previous.length ? quest.outcomes.find((o) => o.id === previous[previous.length - 1].outcomeId) : null;
 
   return (
     <main className="flex-1 flex flex-col">
-      <TopBar playerName={state.displayName} right={<Link href="/world" className="btn btn-quiet px-2 py-1 text-xs">← Map</Link>} />
+      <TopBar playerName={player.displayName} right={<Link href="/world" className="btn btn-quiet px-2 py-1 text-xs">← Map</Link>} />
       <div className="px-4 sm:px-6 py-8 max-w-5xl w-full mx-auto grid lg:grid-cols-[1fr_320px] gap-8">
         <article className="fade-up">
           <p className="eyebrow" style={{ color: world?.accent }}>
@@ -72,23 +69,23 @@ export default async function QuestBriefingPage({ params }: PageProps<"/quests/[
                 <p className="text-paper-2">{quest.briefing.hint}</p>
               </section>
             )}
-            {lastOutcome && (
+            {b.lastOutcomeLabel && (
               <section className="card p-4">
                 <p className="eyebrow mb-1">Last time</p>
-                <p className="text-paper">{lastOutcome.label}</p>
+                <p className="text-paper">{b.lastOutcomeLabel}</p>
                 <p className="text-sm text-paper-3 mt-1">Replaying will not undo consequences already in the world, but {npc.shortName} may treat you differently now.</p>
               </section>
             )}
           </div>
 
           <div className="mt-10 flex flex-wrap items-center gap-3">
-            {prereq.ok ? (
+            {b.canStart ? (
               <StartQuestButton questId={quest.id} npcName={npc.shortName} />
             ) : (
               <div className="text-sm text-paper-3">
                 <p className="text-paper-2">Not yet.</p>
                 <ul>
-                  {prereq.unmet.map((u) => (
+                  {b.unmet.map((u) => (
                     <li key={u}>— {u}</li>
                   ))}
                 </ul>

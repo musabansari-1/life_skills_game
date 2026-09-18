@@ -161,3 +161,10 @@ export class NullSpeechSynthesizer implements SpeechSynthesizer {
 }
 
 export type { SR };
+
+/** Web defaults for useVoiceSession. Call on the client only. */
+export function createBrowserVoiceProviders(): { recognizer: SpeechRecognizer | null; synthesizer: SpeechSynthesizer } {
+  if (typeof window === "undefined") return { recognizer: null, synthesizer: new NullSpeechSynthesizer() };
+  const recognizer = new BrowserSpeechRecognizer();
+  return { recognizer: recognizer.available ? recognizer : null, synthesizer: new BrowserSpeechSynthesizer() };
+}

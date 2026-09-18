@@ -6,11 +6,13 @@
  * said; the player's controls are a mic and (fallback) a text line.
  */
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Orb } from "@/components/Orb";
 import { useVoiceSession } from "@/voice/useVoiceSession";
+import { createBrowserVoiceProviders, NullSpeechSynthesizer } from "@/voice/browser";
 import type { VoiceProfile } from "@/voice/types";
-import type { ClientAttempt } from "./client-types";
+import type { ClientAttempt } from "@/contracts/api";
+import { createGameClient, GameApiError } from "@/client/gameClient";
 
 interface SceneProps {
   initial: ClientAttempt;
@@ -19,6 +21,8 @@ interface SceneProps {
   playerName: string;
   initialMode: "voice" | "text";
 }
+
+const noopSubscribe = () => () => {};
 
 const MOOD_COPY: Record<ClientAttempt["mood"], string> = {
   warm: "seems warm",
@@ -40,66 +44,59 @@ export function Scene({ initial, quest, npc, playerName, initialMode }: ScenePro
   const [netError, setNetError] = useState<string | null>(null);
   const captionRef = useRef<HTMLParagraphElement>(null);
 
+  // Same platform-neutral client a native app would use (cookie auth on web).
+  const api = useMemo(() => createGameClient({ baseUrl: "" }), []);
+  const turnsRef = useRef(initial.turns.length);
+  useEffect(() => {
+    turnsRef.current = attempt.turns.filter((t) => !t.id.startsWith("tmp_")).length;
+  }, [attempt.turns]);
+
   const sendTurn = useCallback(
     async (playerText: string, modality: "voice" | "text", onSpeech: (s: string, done: boolean) => void) => {
       setNetError(null);
+      const expectedTurnCount = turnsRef.current;
       // Optimistically show the player's line in the transcript.
       setAttempt((a) => ({ ...a, turns: [...a.turns, { id: `tmp_${Date.now()}`, index: a.turns.length, speaker: "player", text: playerText }] }));
       setCaption("");
-      const res = await fetch(`/api/attempts/${attempt.id}/turn`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: playerText, modality }),
-      });
-      if (!res.ok || !res.body) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error ?? "The line dropped. Try again.");
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let finalAttempt: ClientAttempt | null = null;
-      let errorMsg: string | null = null;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const ev = /^event: (.+)$/m.exec(block)?.[1];
-          const dataLine = /^data: (.+)$/m.exec(block)?.[1];
-          if (!ev || !dataLine) continue;
-          const data = JSON.parse(dataLine);
-          if (ev === "speech") {
-            setCaption(data.text);
-            onSpeech(data.text, data.done);
-          } else if (ev === "result") {
-            finalAttempt = data as ClientAttempt;
-          } else if (ev === "error") {
-            errorMsg = data.error;
-          }
-        }
-      }
-      if (errorMsg) {
-        // Roll back the optimistic player line.
-        setAttempt((a) => ({ ...a, turns: a.turns.filter((t) => !t.id.startsWith("tmp_")) }));
-        throw new Error(errorMsg);
-      }
-      if (finalAttempt) {
-        setAttempt(finalAttempt);
-        const last = finalAttempt.turns.filter((t) => t.speaker === "npc").at(-1);
+      try {
+        const next = await api.streamTurn(
+          attempt.id,
+          { text: playerText, modality, expectedTurnCount },
+          {
+            onSpeech: (text, done) => {
+              setCaption(text);
+              onSpeech(text, done);
+            },
+          },
+        );
+        setAttempt(next);
+        const last = next.turns.filter((t) => t.speaker === "npc").at(-1);
         if (last) {
           setCaption(last.text);
           onSpeech(last.text, true);
         }
+      } catch (err) {
+        // Roll back the optimistic line; on a conflict, resync from the server (another tab/device, or a retried request).
+        setAttempt((a) => ({ ...a, turns: a.turns.filter((t) => !t.id.startsWith("tmp_")) }));
+        if (err instanceof GameApiError && err.code === "conflict") {
+          const fresh = await api.attempt(attempt.id).catch(() => null);
+          if (fresh) {
+            setAttempt(fresh.attempt);
+            setCaption(fresh.attempt.turns.filter((t) => t.speaker === "npc").at(-1)?.text ?? "");
+          }
+        }
+        throw err;
       }
     },
-    [attempt.id],
+    [api, attempt.id],
   );
 
-  const voice = useVoiceSession({ profile: npc.voice, sendTurn, textOnly: initialMode === "text" });
+  // Web-specific speech providers; a native client injects its own implementations.
+  // Server snapshot = no speech APIs; the client switches to real providers after hydration,
+  // so server and client first renders match (no hydration mismatch).
+  const isClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
+  const voiceProviders = useMemo(() => (isClient ? createBrowserVoiceProviders() : { recognizer: null, synthesizer: new NullSpeechSynthesizer() }), [isClient]);
+  const voice = useVoiceSession({ profile: npc.voice, sendTurn, textOnly: initialMode === "text", ...voiceProviders });
   const ended = !!attempt.ended || attempt.status !== "active";
   const busy = voice.state === "thinking";
   const playerTurns = attempt.turns.filter((t) => t.speaker === "player").length;
@@ -134,9 +131,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode }: ScenePro
     setConcluding(true);
     voice.cancelSpeaking();
     try {
-      const res = await fetch(`/api/attempts/${attempt.id}/conclude`, { method: "POST" });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error ?? "Couldn't wrap up.");
+      await api.conclude(attempt.id);
       router.push(`/results/${attempt.id}`);
     } catch (err) {
       setNetError(err instanceof Error ? err.message : "Couldn't wrap up.");
@@ -146,7 +141,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode }: ScenePro
 
   async function leave() {
     voice.cancelSpeaking();
-    await fetch(`/api/attempts/${attempt.id}/abandon`, { method: "POST" }).catch(() => {});
+    await api.abandon(attempt.id).catch(() => {});
     router.push("/world");
   }
 

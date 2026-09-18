@@ -1,4 +1,4 @@
-import type { SkillView } from "@/server/game-view";
+import type { SkillView } from "@/contracts/api";
 
 export function SkillList({ skills, compact = false }: { skills: SkillView[]; compact?: boolean }) {
   return (

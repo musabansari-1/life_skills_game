@@ -1,6 +1,5 @@
-import { NextResponse } from "next/server";
 import { DbAnalytics } from "@/server/analytics";
-import { errorResponse, requirePlayer } from "../../_lib";
+import { errorResponse, ok, requirePlayer } from "../../_lib";
 
 /** Instrumentation only: the player shared (or copied) a result card. */
 export async function POST(req: Request) {
@@ -8,7 +7,7 @@ export async function POST(req: Request) {
     const { db, player } = await requirePlayer();
     const body = (await req.json().catch(() => ({}))) as { questId?: string };
     await new DbAnalytics(db).track(player.playerId, "result_shared", { questId: body.questId ?? null });
-    return NextResponse.json({ ok: true });
+    return ok({ ok: true });
   } catch (err) {
     return errorResponse(err);
   }

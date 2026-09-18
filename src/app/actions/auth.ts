@@ -1,65 +1,63 @@
 "use server";
-
+/**
+ * Web-only auth adapter: server actions that call the shared account service
+ * and store the session in an httpOnly cookie. Native clients use
+ * /api/v1/auth/* with bearer tokens against the same service.
+ */
 import { redirect } from "next/navigation";
-import { z } from "zod";
-import { AuthError, clearSession, createSession, getCurrentPlayer, setSessionCookie, signIn, signUp } from "@/server/auth";
+import { AuthError, loginAccount, onboardPlayer, registerAccount, ValidationError } from "@/server/account";
 import { getGame } from "@/server/context";
-import { completeOnboarding } from "@/server/player";
+import { endCurrentSession, getCurrentPlayer, setSessionCookie } from "@/server/session";
 
 export interface AuthFormState {
   error?: string;
 }
 
-const Credentials = z.object({
-  email: z.string().email("Enter a valid email."),
-  password: z.string().min(8, "Password must be at least 8 characters."),
-});
+function formCredentials(form: FormData) {
+  return { email: String(form.get("email") ?? ""), password: String(form.get("password") ?? "") };
+}
 
 export async function signUpAction(_prev: AuthFormState, form: FormData): Promise<AuthFormState> {
-  const parsed = Credentials.safeParse({ email: form.get("email"), password: form.get("password") });
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { db } = await getGame();
   try {
-    const { userId } = await signUp(db, parsed.data.email, parsed.data.password, "");
-    await setSessionCookie(await createSession(db, userId));
+    const session = await registerAccount(db, formCredentials(form));
+    await setSessionCookie(session.token);
   } catch (err) {
-    if (err instanceof AuthError) return { error: err.message };
+    if (err instanceof AuthError || err instanceof ValidationError) return { error: err.message };
     throw err;
   }
   redirect("/onboarding");
 }
 
 export async function signInAction(_prev: AuthFormState, form: FormData): Promise<AuthFormState> {
-  const parsed = Credentials.safeParse({ email: form.get("email"), password: form.get("password") });
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { db } = await getGame();
+  let onboarded = false;
   try {
-    const { userId } = await signIn(db, parsed.data.email, parsed.data.password);
-    await setSessionCookie(await createSession(db, userId));
+    const session = await loginAccount(db, formCredentials(form));
+    await setSessionCookie(session.token);
+    onboarded = session.player.onboardingCompleted;
   } catch (err) {
-    if (err instanceof AuthError) return { error: err.message };
+    if (err instanceof AuthError || err instanceof ValidationError) return { error: err.message };
     throw err;
   }
-  const player = await getCurrentPlayer(db);
-  redirect(player?.onboardingCompleted ? "/world" : "/onboarding");
+  redirect(onboarded ? "/world" : "/onboarding");
 }
 
 export async function signOutAction() {
   const { db } = await getGame();
-  await clearSession(db);
+  await endCurrentSession(db);
   redirect("/");
 }
 
 export async function completeOnboardingAction(_prev: AuthFormState, form: FormData): Promise<AuthFormState> {
-  const name = String(form.get("displayName") ?? "").trim();
-  if (name.length < 2) return { error: "Give your character a name (2+ characters)." };
-  if (name.length > 24) return { error: "Keep it under 24 characters." };
-  const { db, game } = await getGame();
+  const { db } = await getGame();
   const player = await getCurrentPlayer(db);
   if (!player) redirect("/");
-  await completeOnboarding(db, player.playerId, name);
-  const { DbAnalytics } = await import("@/server/analytics");
-  await new DbAnalytics(db).track(player.playerId, "onboarding_completed", { displayName: name });
-  void game;
+  try {
+    await onboardPlayer(db, player.playerId, { displayName: String(form.get("displayName") ?? "") });
+  } catch (err) {
+    if (err instanceof ValidationError) return { error: err.message };
+    throw err;
+  }
   redirect("/world");
 }

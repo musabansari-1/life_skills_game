@@ -1,23 +1,25 @@
 /**
- * Minimal, real authentication: email + password (scrypt), DB-backed sessions,
- * httpOnly cookie. Enough for persistent progression; account management
- * screens can be added later without touching this.
+ * Authentication service — transport-agnostic.
+ *
+ * Email + password (scrypt) and DB-backed opaque session tokens (stored
+ * hashed). The same session is usable two ways:
+ *   - web: httpOnly cookie (set by server actions via ./session.ts)
+ *   - native: `Authorization: Bearer <token>` (issued by /api/v1/auth/*)
+ * Nothing in this file touches cookies, headers or Next.js.
  */
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { cookies } from "next/headers";
 import type { Db } from "@/db/client";
-import { players, sessions, users } from "@/db/schema";
+import { players, sessions, users, worldStates } from "@/db/schema";
 import { defaultEnv } from "@/engine/util";
 import { createEmptyProfile } from "@/engine/competency";
 import { createInitialWorldState } from "@/engine/types/world";
-import { worldStates } from "@/db/schema";
 import { env } from "@/lib/env";
 
 const scrypt = promisify(scryptCb);
 export const SESSION_COOKIE = "lsg_session";
-const SESSION_DAYS = 30;
+export const SESSION_DAYS = 30;
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
@@ -66,30 +68,21 @@ export async function signIn(db: Db, email: string, password: string) {
   return { userId: user.id };
 }
 
-export async function createSession(db: Db, userId: string): Promise<string> {
+export interface IssuedSession {
+  token: string;
+  expiresAt: string;
+}
+
+export async function createSession(db: Db, userId: string): Promise<IssuedSession> {
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
-  const expires = new Date(now.getTime() + SESSION_DAYS * 86400_000);
-  await db.insert(sessions).values({ id: hashToken(token), userId, expiresAt: expires.toISOString(), createdAt: now.toISOString() });
-  return token;
+  const expiresAt = new Date(now.getTime() + SESSION_DAYS * 86400_000).toISOString();
+  await db.insert(sessions).values({ id: hashToken(token), userId, expiresAt, createdAt: now.toISOString() });
+  return { token, expiresAt };
 }
 
-export async function setSessionCookie(token: string) {
-  const store = await cookies();
-  store.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: env.NODE_ENV === "production",
-    path: "/",
-    maxAge: SESSION_DAYS * 86400,
-  });
-}
-
-export async function clearSession(db: Db) {
-  const store = await cookies();
-  const token = store.get(SESSION_COOKIE)?.value;
-  if (token) await db.delete(sessions).where(eq(sessions.id, hashToken(token)));
-  store.delete(SESSION_COOKIE);
+export async function revokeSession(db: Db, token: string) {
+  await db.delete(sessions).where(eq(sessions.id, hashToken(token)));
 }
 
 export interface CurrentPlayer {
@@ -99,10 +92,8 @@ export interface CurrentPlayer {
   onboardingCompleted: boolean;
 }
 
-/** Resolve the current player from the session cookie, or null. */
-export async function getCurrentPlayer(db: Db): Promise<CurrentPlayer | null> {
-  const store = await cookies();
-  const token = store.get(SESSION_COOKIE)?.value;
+/** Resolve a player from a raw session token (cookie value or bearer token). */
+export async function resolvePlayerFromToken(db: Db, token: string | null | undefined): Promise<CurrentPlayer | null> {
   if (!token) return null;
   const session = await db.query.sessions.findFirst({ where: eq(sessions.id, hashToken(token)) });
   if (!session || session.expiresAt < new Date().toISOString()) return null;

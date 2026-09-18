@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import type { WorldCard } from "@/server/game-view";
+import type { WorldCard } from "@/contracts/api";
 
 /**
  * The world map: an abstract, slowly drifting chart of districts. Open worlds

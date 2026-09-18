@@ -2,7 +2,7 @@
 
 Counterpart is a voice-first RPG where **conversations are the gameplay**. One persistent player character moves through a simulated world by speaking to AI characters who remember, react, and change the world.
 
-This document explains how the system is built so it can be extended without breaking it. Read `DEVELOPMENT-HANDOFF.md` for what to do next and `docs/ADDING-CONTENT.md` for quest/NPC/world recipes.
+This document explains how the system is built so it can be extended without breaking it. Read `DEVELOPMENT-HANDOFF.md` for what to do next, `docs/ADDING-CONTENT.md` for quest/NPC/world recipes, and `MOBILE-ARCHITECTURE.md` for the client/API boundary (web today, native later).
 
 ## Stack
 
@@ -38,14 +38,17 @@ src/
     json.ts         JSON extraction/repair + zod validation
     logger.ts       AI call logging sinks
   content/     Worlds, locations, NPCs, quests. Typed TS config, versioned in code.
+  contracts/   Public /api/v1 wire schemas (zod). Shared by server and every client.
+  client/      Platform-neutral API SDK + SSE parser (web today; React Native later).
   db/          Drizzle schema, client, migrations (drizzle/)
-  server/      Orchestrator (the game loop), player repo, auth, analytics, view models
-  voice/       SpeechRecognizer / SpeechSynthesizer contracts, browser impls, useVoiceSession
-  app/         Routes (server components + a few client components), API route handlers
+  server/      Orchestrator (game loop), queries (read models → DTOs), account/auth (transport-agnostic),
+               session (Next cookie/bearer adapter), player repo, analytics
+  voice/       SpeechRecognizer / SpeechSynthesizer contracts, pure chunker, useVoiceSession (injected providers), browser impls
+  app/         Web UI routes + /api/v1 JSON/SSE route handlers (thin adapters over server/*)
   components/  Shared UI (Orb, WorldMap, SkillList, TopBar, AuthForm)
 ```
 
-Dependency direction: `app → server → (engine, ai, content, db)`. `engine` imports nothing outside itself. `content` imports only `engine`. `ai` imports `engine` types only.
+Dependency direction: `app → server → (engine, ai, content, db)`; `client → contracts → engine/types`. `engine` imports nothing outside itself. `content` imports only `engine`. `ai` imports `engine` types only. Web pages and `/api/v1` routes both read through `server/queries.ts`, so every client sees identical data.
 
 ## The game loop
 
@@ -74,7 +77,7 @@ concludeQuest(playerId, attemptId)
   │     world.* → applyConsequences (engine/world)
   │     relationship.delta → applyRelationshipDelta (engine/relationships)
   │     npc.memory.event → appended to NPC memory
-  ├─ persist world, competencies, NPC states, attempt result (one logical unit)
+  ├─ persist world, competencies, NPC states, attempt result (one DB transaction; attempt claimed atomically first)
   └─ emit events (analytics + history)
 ```
 
