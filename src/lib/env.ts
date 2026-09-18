@@ -39,7 +39,9 @@ function load(): Env {
     throw new Error(`Invalid environment configuration:\n${msg}`);
   }
   const env = parsed.data;
-  if (env.NODE_ENV === "production" && env.SESSION_SECRET.startsWith("dev-only")) {
+  // Enforced at runtime only; `next build` evaluates modules without production secrets.
+  const building = process.env.NEXT_PHASE === "phase-production-build";
+  if (env.NODE_ENV === "production" && !building && env.SESSION_SECRET.startsWith("dev-only")) {
     throw new Error("SESSION_SECRET must be set in production");
   }
   return env;

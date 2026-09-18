@@ -33,8 +33,8 @@ export default async function WorldPage() {
   return (
     <main className="flex-1 flex flex-col">
       <TopBar playerName={state.displayName} />
-      <div className="px-4 sm:px-6 py-6 max-w-7xl w-full mx-auto grid lg:grid-cols-[1fr_300px] gap-6">
-        <section className="fade-up space-y-4">
+      <div className="px-4 sm:px-6 py-6 max-w-7xl w-full mx-auto grid lg:grid-cols-[minmax(0,1fr)_300px] gap-6">
+        <section className="fade-up space-y-4 min-w-0">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="eyebrow">The universe</p>
@@ -70,7 +70,7 @@ export default async function WorldPage() {
           <WorldMap worlds={worlds} initialWorldId={worlds.find((w) => w.quests.some((q) => q.isNext || (q.availability === "available" && q.id === "counter_offer")))?.id} />
         </section>
 
-        <aside className="space-y-4 fade-up" style={{ animationDelay: "120ms" }}>
+        <aside className="space-y-4 fade-up min-w-0" style={{ animationDelay: "120ms" }}>
           <div className="card p-5">
             <p className="eyebrow mb-3">Skills</p>
             <SkillList skills={skills} compact />

@@ -159,7 +159,7 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
     hiddenBriefing: ({ hidden, scene }) =>
       [
         `Original offer: ${formatINR(hidden.originalBase)} base, no joining bonus.`,
-        `Your absolute ceiling on base is ${formatINR(hidden.maxBase)}. You cannot exceed it under any circumstances; if pushed beyond it, say the band is fixed.`,
+        `Your absolute ceiling on base is ${formatINR(hidden.maxBase)}. You cannot exceed it under any circumstances; if pushed beyond it, say the band is fixed. NEVER say the ceiling figure out loud — saying it hands the player your walk-away number. You may say base is capped; you may offer a figure at or below it.`,
         `You can offer a one-time joining bonus of up to ${formatINR(hidden.signingBonusMax)}. This is your easiest lever, but you don't volunteer it.`,
         `Urgency to hire: ${hidden.urgency}. The team is short-staffed.`,
         `Competing candidates: ${hidden.competingCandidates}, weaker than ${"this candidate"}.`,

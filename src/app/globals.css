@@ -61,6 +61,7 @@ body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   min-height: 100dvh;
+  overflow-x: hidden;
 }
 
 ::selection {
@@ -92,6 +93,8 @@ body {
   font-variation-settings: "opsz" 144, "SOFT" 30;
 }
 
+/* Component classes live in the components layer so Tailwind utilities (px-2, py-1…) can override them. */
+@layer components {
 .eyebrow {
   font-size: 0.68rem;
   letter-spacing: 0.22em;
@@ -170,6 +173,7 @@ body {
 }
 .input::placeholder {
   color: var(--paper-3);
+}
 }
 
 /* Presence orb: the NPC's abstract avatar. State drives animation. */

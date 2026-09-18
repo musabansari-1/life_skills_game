@@ -20,7 +20,11 @@ Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `cla
 
 Verified in this phase:
 - Full loop with the fake provider (tests + Playwright walkthrough: sign up → onboarding → map → briefing → scene → results → follow-up → dossier).
-- Full loop with a real model over OpenRouter (`deepseek/deepseek-v4-flash-0731:free`): Emma opened, negotiated, evaluation + memory extraction produced valid structured output; world state, relationship and memory persisted; follow-up quest unlocked. Free models are slow and flaky; a Claude model is the intended production path.
+- Full loop with a real model over OpenRouter (`deepseek/deepseek-v4-flash-0731:free`), both scripted strategies:
+  - Evidence + discovery: ₹8.5L → ₹9.2L base + ₹60K bonus, outcome "Strong deal", Emma trust +7 / respect +10, follow-up unlocked.
+  - Ultimatums: Emma's patience hit 0 by turn 3, she withdrew the offer ("Walked away"), career reset to exploring, trust −15, negative beliefs stored in her memory.
+  Free models are slow (evaluation 60–170 s) and under-report moves; the speech-inference + perception safety nets carried that run. A Claude model is the intended production path.
+- Production build (`next build`) passes. All screens fit a 390px phone with no horizontal scroll.
 - Voice mode was **not** exercised end-to-end in an automated way (headless Chrome has no mic). The Web Speech code paths are straightforward but need a manual pass in Chrome with a microphone.
 
 ## Invariants — do not break these

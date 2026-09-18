@@ -14,8 +14,8 @@ export function WorldMap({ worlds, initialWorldId }: { worlds: WorldCard[]; init
   const selected = worlds.find((w) => w.id === selectedId) ?? worlds[0];
 
   return (
-    <div className="grid lg:grid-cols-[1fr_360px] gap-6">
-      <div className="card relative overflow-hidden aspect-[4/3] sm:aspect-[16/10] min-h-[380px]">
+    <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-6 min-w-0">
+      <div className="card relative overflow-hidden aspect-[4/3] sm:aspect-[16/10] sm:min-h-[320px] min-w-0 w-full">
         <svg viewBox="0 0 100 62" className="absolute inset-0 w-full h-full" preserveAspectRatio="none" aria-hidden>
           <defs>
             <pattern id="grid" width="6" height="6" patternUnits="userSpaceOnUse">
@@ -62,7 +62,7 @@ export function WorldMap({ worlds, initialWorldId }: { worlds: WorldCard[]; init
                 />
                 {w.availableCount > 0 && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-brass ring-2 ring-ink-1" />}
               </span>
-              <span className={`mt-2 block whitespace-nowrap text-[11px] sm:text-xs tracking-wide ${active ? "text-paper" : "text-paper-2"} ${locked ? "italic" : ""}`}>
+              <span className={`mt-2 block whitespace-nowrap text-[10px] sm:text-xs tracking-wide ${w.map.x > 75 ? "-translate-x-1/3" : ""} ${active ? "text-paper" : "text-paper-2"} ${locked ? "italic" : ""}`}>
                 {w.name}
                 {locked && <span className="text-paper-3 not-italic"> · locked</span>}
               </span>

@@ -172,18 +172,19 @@ export function Scene({ initial, quest, npc, playerName, initialMode }: ScenePro
 
       {/* Top bar */}
       <header className="relative z-10 flex items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b border-line">
-        <div className="min-w-0">
-          <p className="eyebrow truncate">{quest.locationName}</p>
+        <div className="min-w-0 flex-1">
+          <p className="eyebrow truncate hidden sm:block">{quest.locationName}</p>
           <p className="text-sm text-paper truncate">{quest.title}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           <button type="button" onClick={() => setShowTranscript((v) => !v)} className="btn btn-quiet px-2 py-1 text-xs">
-            Transcript
+            <span className="hidden sm:inline">Transcript</span>
+            <span className="sm:hidden">Log</span>
           </button>
           <button type="button" onClick={() => setLeaveConfirm(true)} className="btn btn-quiet px-2 py-1 text-xs">
             Leave
           </button>
-          <button type="button" onClick={conclude} disabled={!canConclude || concluding} className={`btn ${ended ? "btn-primary" : "btn-ghost"} px-3 py-1.5 text-xs`}>
+          <button type="button" onClick={conclude} disabled={!canConclude || concluding} className={`btn ${ended ? "btn-primary" : "btn-ghost"} px-3 py-1.5 text-xs whitespace-nowrap`}>
             {ended ? "See how it went" : "Wrap up"}
           </button>
         </div>

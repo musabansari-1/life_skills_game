@@ -12,7 +12,7 @@ import * as schema from "./schema";
 
 export type Db = LibSQLDatabase<typeof schema>;
 
-const MIGRATIONS_FOLDER = path.join(process.cwd(), "drizzle");
+const MIGRATIONS_FOLDER = path.join(/*turbopackIgnore: true*/ process.cwd(), "drizzle");
 
 let dbPromise: Promise<Db> | null = null;
 
@@ -24,7 +24,7 @@ export function getDb(): Promise<Db> {
 async function init(): Promise<Db> {
   if (env.DATABASE_URL.startsWith("file:")) {
     const file = env.DATABASE_URL.slice("file:".length);
-    const dir = path.dirname(path.resolve(process.cwd(), file));
+    const dir = path.dirname(path.resolve(/*turbopackIgnore: true*/ process.cwd(), file));
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
   const client = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
