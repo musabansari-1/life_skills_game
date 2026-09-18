@@ -6,6 +6,8 @@ import { worldOverview } from "@/server/queries";
 import { SkillList } from "@/components/SkillList";
 import { TopBar } from "@/components/TopBar";
 import { WorldMap } from "@/components/WorldMap";
+import { findQuest } from "@/content/quests";
+import { NPCS } from "@/content/npcs";
 
 export const metadata = { title: "World" };
 export const dynamic = "force-dynamic";
@@ -19,7 +21,9 @@ export default async function WorldPage() {
   // Same payload as GET /api/v1/world.
   const view = await worldOverview(game, player.playerId);
   const { worlds, skills, people, openCommitments, activeAttempt: active } = view;
-  const focusWorldId = worlds.find((w) => w.quests.some((q) => q.isNext || (q.availability === "available" && q.id === "counter_offer")))?.id;
+  const campaign = view.campaign;
+  const currentQuest = campaign?.currentQuestId ? findQuest(campaign.currentQuestId) : null;
+  const focusWorldId = currentQuest?.worldId ?? worlds.find((w) => w.availableCount > 0)?.id;
 
   return (
     <main className="flex-1 flex flex-col">
@@ -33,6 +37,41 @@ export default async function WorldPage() {
             </div>
             <p className="text-sm text-paper-3">{view.career.label}</p>
           </div>
+
+          {campaign && (
+            <div className="card p-5 sm:p-6 relative overflow-hidden">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="eyebrow text-brass">{campaign.title}</p>
+                  {campaign.finished ? (
+                    <p className="font-display text-2xl mt-1">Chapter complete.</p>
+                  ) : currentQuest ? (
+                    <>
+                      <p className="font-display text-2xl sm:text-3xl mt-1">{currentQuest.title}</p>
+                      <p className="text-paper-2 text-sm mt-1 italic">{currentQuest.tagline}</p>
+                      <p className="text-paper-3 text-xs mt-1">with {NPCS[currentQuest.npcId]?.name}</p>
+                    </>
+                  ) : null}
+                </div>
+                {!campaign.finished && currentQuest && !active && (
+                  <Link href={`/quests/${currentQuest.id}`} className="btn btn-primary shrink-0">
+                    Continue
+                  </Link>
+                )}
+              </div>
+              <ol className="mt-5 grid grid-cols-6 gap-1.5" aria-label="Chapters">
+                {campaign.chapters.map((c, i) => (
+                  <li key={c.questId} className="min-w-0">
+                    <div className={`h-1 rounded-full ${c.state === "done" ? "bg-brass" : c.state === "current" ? "bg-brass/40" : "bg-ink-4"}`} />
+                    <p className={`mt-1.5 text-[10px] sm:text-[11px] truncate ${c.state === "current" ? "text-paper" : c.state === "done" ? "text-paper-2" : "text-paper-3"}`}>
+                      <span className="hidden sm:inline">{i + 1}. </span>
+                      {c.label}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
 
           {active && (
             <div className="card p-4 flex flex-wrap items-center justify-between gap-3 border-brass/40">
@@ -81,6 +120,20 @@ export default async function WorldPage() {
               </ul>
             )}
           </div>
+
+          {view.story.length > 0 && (
+            <div className="card p-5">
+              <p className="eyebrow mb-3">Your story so far</p>
+              <ol className="space-y-2 text-sm text-paper-2">
+                {view.story.map((s, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="text-paper-3 tabular-nums">{view.story.length - i}.</span>
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
 
           {openCommitments.length > 0 && (
             <div className="card p-5">

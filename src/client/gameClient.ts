@@ -113,6 +113,47 @@ export function createGameClient(opts: GameClientOptions) {
     conclude: (attemptId: string) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/conclude`, ConcludeResponseSchema, {}),
     trackShare: (questId: string) => request("POST", "/events/share", AckSchema, { questId }),
 
+    /**
+     * Conclude with live progress (SSE). `onProgress` receives stages:
+     * reviewing → remembering → evaluated → applying → done (plus "working" heartbeats).
+     */
+    async concludeWithProgress(attemptId: string, onProgress: (stage: string) => void): Promise<{ attemptId: string; status: string }> {
+      const res = await f(`${base}/attempts/${encodeURIComponent(attemptId)}/conclude`, {
+        method: "POST",
+        headers: await headers({ Accept: "text/event-stream" }),
+        body: "{}",
+        credentials: "include",
+      });
+      if (!res.ok) return fail(res);
+      const parser = new SSEParser();
+      let result: { attemptId: string; status: string } | null = null;
+      const handle = (events: ReturnType<SSEParser["push"]>) => {
+        for (const ev of events) {
+          const data = JSON.parse(ev.data);
+          if (ev.event === "progress") onProgress(String(data.stage));
+          else if (ev.event === "result") result = ConcludeResponseSchema.parse(data);
+          else if (ev.event === "error") {
+            const e = ApiErrorSchema.parse(data);
+            throw new GameApiError(e.error, e.code, e.code === "conflict" ? 409 : 500);
+          }
+        }
+      };
+      const reader = res.body?.getReader?.();
+      if (!reader) {
+        handle([...parser.push(await res.text()), ...parser.end()]);
+      } else {
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          handle(parser.push(decoder.decode(value, { stream: true })));
+        }
+        handle(parser.end());
+      }
+      if (!result) throw new GameApiError("The connection dropped while finishing. Check the result in a moment.", "internal", 500);
+      return result;
+    },
+
     /** Non-streaming turn: one round trip, returns the whole reply. Works with any fetch. */
     sendTurn: (attemptId: string, turn: TurnRequest) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/turn`, TurnResponseSchema, turn),
 

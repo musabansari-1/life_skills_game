@@ -18,8 +18,9 @@ export async function generateMetadata({ params }: PageProps<"/quests/[id]">) {
   return { title: findQuest(id)?.title ?? "Quest" };
 }
 
-export default async function QuestBriefingPage({ params }: PageProps<"/quests/[id]">) {
+export default async function QuestBriefingPage({ params, searchParams }: PageProps<"/quests/[id]">) {
   const { id } = await params;
+  const first = (await searchParams).first === "1";
   const quest = findQuest(id);
   if (!quest) notFound();
   const { db, game } = await getGame();
@@ -37,7 +38,15 @@ export default async function QuestBriefingPage({ params }: PageProps<"/quests/[
       <TopBar playerName={player.displayName} right={<Link href="/world" className="btn btn-quiet px-2 py-1 text-xs">← Map</Link>} />
       <div className="px-4 sm:px-6 py-8 max-w-5xl w-full mx-auto grid lg:grid-cols-[1fr_320px] gap-8">
         <article className="fade-up">
+          {first && (
+            <div className="mb-8 border-l-2 border-brass pl-4 space-y-1.5 text-paper-2">
+              <p className="text-paper">This is a world, not a course.</p>
+              <p>Every person you meet here remembers what you said, and what you say changes what happens next.</p>
+              <p>You talk out loud. Pause when you&apos;re done, and they answer.</p>
+            </div>
+          )}
           <p className="eyebrow" style={{ color: world?.accent }}>
+            {b.chapter ? `Chapter ${b.chapter.index} of ${b.chapter.total} · ` : ""}
             {world?.name} · {location?.name}
           </p>
           <h1 className="font-display text-4xl sm:text-5xl mt-2 leading-tight">{quest.title}</h1>
@@ -52,6 +61,19 @@ export default async function QuestBriefingPage({ params }: PageProps<"/quests/[
               <p className="eyebrow mb-2">Your objective</p>
               <p className="text-paper text-lg">{quest.briefing.objective}</p>
             </section>
+            {b.carryOver.length > 0 && (
+              <section className="rounded-xl border border-brass/30 bg-brass-dim/40 p-4">
+                <p className="eyebrow text-brass mb-2">What carries over</p>
+                <ul className="space-y-1.5">
+                  {b.carryOver.map((line) => (
+                    <li key={line} className="flex gap-2 text-paper">
+                      <span className="text-brass">↳</span>
+                      <span>{line}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <section>
               <p className="eyebrow mb-2">What you know</p>
               <ul className="space-y-1.5">
@@ -71,16 +93,19 @@ export default async function QuestBriefingPage({ params }: PageProps<"/quests/[
             )}
             {b.lastOutcomeLabel && (
               <section className="card p-4">
-                <p className="eyebrow mb-1">Last time</p>
-                <p className="text-paper">{b.lastOutcomeLabel}</p>
-                <p className="text-sm text-paper-3 mt-1">Replaying will not undo consequences already in the world, but {npc.shortName} may treat you differently now.</p>
+                <p className="eyebrow mb-1">Last time: {b.lastOutcomeLabel}</p>
+                <p className="text-sm text-paper-3 mt-1">
+                  {b.replayMode === "rehearsal"
+                    ? `Replaying is a rehearsal: ${npc.shortName} is as they were then, your skills improve, and the world keeps what really happened. Try a different approach.`
+                    : `This is a second chance. ${npc.shortName} remembers the first conversation, and whatever happens now becomes what happened.`}
+                </p>
               </section>
             )}
           </div>
 
           <div className="mt-10 flex flex-wrap items-center gap-3">
             {b.canStart ? (
-              <StartQuestButton questId={quest.id} npcName={npc.shortName} />
+              <StartQuestButton questId={quest.id} npcName={npc.shortName} replayMode={b.replayMode} />
             ) : (
               <div className="text-sm text-paper-3">
                 <p className="text-paper-2">Not yet.</p>

@@ -44,6 +44,7 @@ export function toClientAttempt(a: AttemptView): ClientAttempt {
     ended: a.scene.ended,
     turnCount: a.scene.turnCount,
     maxTurns: quest?.scene.maxTurns ?? 12,
+    mode: a.mode,
   };
 }
 

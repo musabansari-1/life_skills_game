@@ -59,5 +59,6 @@ export async function completeOnboardingAction(_prev: AuthFormState, form: FormD
     if (err instanceof ValidationError) return { error: err.message };
     throw err;
   }
-  redirect("/world");
+  // Straight into the story: the first chapter's briefing, with a short prologue.
+  redirect("/quests/recruiter_screening?first=1");
 }

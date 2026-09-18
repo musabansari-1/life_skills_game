@@ -29,6 +29,11 @@ export interface UseVoiceSessionOptions {
   recognizer: SpeechRecognizer | null;
   /** Text-to-speech provider. */
   synthesizer: SpeechSynthesizer;
+  /**
+   * Hands-free conversation: after the NPC finishes replying to a spoken turn,
+   * start listening again automatically if this returns true.
+   */
+  shouldAutoListen?: () => boolean;
 }
 
 export interface VoiceSessionApi {
@@ -64,11 +69,14 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
   const textOnlyRef = useRef(textOnly);
   const sendTurnRef = useRef(opts.sendTurn);
   const profileRef = useRef(opts.profile);
+  const autoListenRef = useRef(opts.shouldAutoListen);
+  const startListeningRef = useRef<() => void>(() => {});
   useEffect(() => {
     textOnlyRef.current = textOnly;
     sendTurnRef.current = opts.sendTurn;
     profileRef.current = opts.profile;
-  }, [textOnly, opts.sendTurn, opts.profile]);
+    autoListenRef.current = opts.shouldAutoListen;
+  }, [textOnly, opts.sendTurn, opts.profile, opts.shouldAutoListen]);
 
   // ---- speaking queue (sentence-chunked)
   const queueRef = useRef<string[]>([]);
@@ -126,7 +134,15 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
         while ((speakingRef.current || queueRef.current.length) && gen === generationRef.current) {
           await new Promise((r) => setTimeout(r, 80));
         }
-        if (gen === generationRef.current) setS("idle");
+        if (gen === generationRef.current) {
+          setS("idle");
+          // Hands-free: keep the conversation going if the player is speaking, not typing.
+          if (modality === "voice" && !textOnlyRef.current && autoListenRef.current?.()) {
+            setTimeout(() => {
+              if (stateRef.current === "idle" && gen === generationRef.current) startListeningRef.current();
+            }, 350);
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong.");
         setS("error");
@@ -167,6 +183,10 @@ export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
       { lang: "en-IN" },
     );
   }, [recognizer, synth, cancelSpeaking, runTurn, setS]);
+
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
 
   const stopListening = useCallback(() => {
     recognizer?.stop();

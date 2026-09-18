@@ -68,6 +68,8 @@ export const firstDayNovaLabs = defineQuest<Hidden, Scene>({
     if (style === "hardball") lines.push("You pushed Emma hard in the negotiation. She hasn't forgotten.");
     if (style === "accepted_immediately") lines.push("You took Emma's first offer on the spot. She noticed.");
     if (style === "revealed_floor") lines.push("You told Emma your floor. She met it exactly, and she knows it.");
+    if (style === "modest") lines.push("The negotiation was unremarkable. Emma has no strong feelings about you yet. This is your chance.");
+    if (style === "no_change") lines.push("You didn't move the offer. Emma thinks you're easy to work with, and maybe easy to overlook.");
     if (world.career.baseSalary) lines.push(`You're starting at ${formatINR(world.career.baseSalary)} base.`);
     if (world.vars["nova_labs.knows_release_late"] === true) lines.push("Rohan told you in the interview that the release is late. You won't be surprised.");
     return lines;

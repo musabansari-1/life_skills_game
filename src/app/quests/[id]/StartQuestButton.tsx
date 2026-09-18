@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { createGameClient } from "@/client/gameClient";
 
-export function StartQuestButton({ questId, npcName }: { questId: string; npcName: string }) {
+export function StartQuestButton({ questId, npcName, replayMode = "first" }: { questId: string; npcName: string; replayMode?: "first" | "second_chance" | "rehearsal" }) {
   const router = useRouter();
   const [pending, setPending] = useState<null | "voice" | "text">(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +26,7 @@ export function StartQuestButton({ questId, npcName }: { questId: string; npcNam
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => start("voice")} disabled={pending !== null} className="btn btn-primary">
-          {pending === "voice" ? `${npcName} is picking up…` : "Enter the scene"}
+          {pending === "voice" ? `${npcName} is picking up…` : replayMode === "rehearsal" ? "Rehearse the scene" : replayMode === "second_chance" ? "Ask for a second chance" : "Enter the scene"}
           {pending !== "voice" && <MicIcon />}
         </button>
         <button type="button" onClick={() => start("text")} disabled={pending !== null} className="btn btn-ghost">

@@ -4,6 +4,7 @@
  * voices; the interfaces exist so a server TTS/STT can replace these.
  */
 import type { RecognizerEvents, SpeechRecognizer, SpeechSynthesizer, VoiceProfile } from "./types";
+import { Endpointer } from "./endpointing";
 
 type SR = typeof window extends { SpeechRecognition: infer T } ? T : never;
 
@@ -17,6 +18,7 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
   private rec: SpeechRecognition | null = null;
   private ctor = getSpeechRecognitionCtor();
   private finalText = "";
+  private endpointer: Endpointer | null = null;
   readonly available = !!this.ctor;
 
   start(events: RecognizerEvents, opts?: { lang?: string }) {
@@ -32,6 +34,13 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
+    // Hands-free turns: stop listening when the player pauses after speaking.
+    this.endpointer?.cancel();
+    const endpointer = new Endpointer(() => {
+      if (this.rec === rec) this.stop();
+    });
+    this.endpointer = endpointer;
+    endpointer.start();
     rec.onresult = (e: SpeechRecognitionEvent) => {
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -39,7 +48,9 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
         if (r.isFinal) this.finalText += (this.finalText ? " " : "") + r[0].transcript.trim();
         else interim += r[0].transcript;
       }
-      events.onInterim((this.finalText + " " + interim).trim());
+      const soFar = (this.finalText + " " + interim).trim();
+      endpointer.activity(soFar);
+      events.onInterim(soFar);
     };
     rec.onerror = (e: SpeechRecognitionErrorEvent) => {
       if (e.error === "no-speech" || e.error === "aborted") return;
@@ -47,6 +58,7 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
       events.onError(fatal ? "Microphone access was blocked. Allow the microphone or use text." : `Speech recognition error: ${e.error}`, fatal);
     };
     rec.onend = () => {
+      endpointer.cancel();
       if (this.rec === rec) {
         this.rec = null;
         events.onFinal(this.finalText.trim());
@@ -69,6 +81,7 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
   }
 
   abort() {
+    this.endpointer?.cancel();
     const r = this.rec;
     this.rec = null;
     try {

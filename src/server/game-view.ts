@@ -196,7 +196,8 @@ export function describeConsequenceForPlayer(c: Consequence): string | null {
     case "world.commitment.resolve":
       return `A promise was ${c.status}.`;
     case "world.decision.add":
-      return c.description;
+      // Decisions are the player's story (shown on the world page), not a world change.
+      return null;
     case "world.opportunity.add":
       return `Opportunity: ${c.description}`;
     case "world.person.met":

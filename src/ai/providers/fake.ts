@@ -64,9 +64,21 @@ export class FakeProvider implements LLMProvider {
   }
 
   private opening(req: CompletionRequest): string {
-    const speech = req.system.includes("Emma")
-      ? "Hi, thanks for making time. I know you've seen the offer — eight and a half lakh base. I wanted to talk it through and see where you're at."
-      : "Hi. Good to see you. What's on your mind?";
+    // Quest-aware canned openers so UI walkthroughs on the fake provider read sensibly.
+    const s = req.system;
+    const speech = /first screening call/.test(s)
+      ? "Hi, I'm Emma from Nova Labs. Thanks for making time. Tell me a bit about yourself and what you've been working on."
+      : /Interviewing .* for the Platform Engineer role/.test(s)
+        ? "Rohan. Thanks for coming in. Tell me about a project that went wrong, and what you did."
+        : /first day/.test(s)
+          ? "Morning! Welcome to Nova Labs. How are you feeling?"
+          : /migration in by Friday/.test(s)
+            ? "Quick one. I need the migration done by Friday for the release."
+            : /owns the database migration/.test(s)
+              ? "You wanted a word? What's up?"
+              : s.includes("Emma")
+                ? "Hi, thanks for making time. I know you've seen the offer, eight and a half lakh base. Where are you at?"
+                : "Hi. Good to see you. What's on your mind?";
     return `${SPEECH_OPEN}${speech}${SPEECH_CLOSE}${MOVES_OPEN}{"noticed":[],"reveal":[],"proposal":{},"wantsToEnd":false}${MOVES_CLOSE}`;
   }
 
@@ -126,7 +138,7 @@ export class FakeProvider implements LLMProvider {
     } else {
       speech = "Okay. So where do you stand on the offer as it is?";
     }
-    if (/(accept|deal|let's do it|i'm in|agreed)/.test(text)) {
+    if (/(\baccept|\bdeal\b|let's do it|i'm in|agreed)/.test(text)) {
       wantsToEnd = true;
       speech = "Brilliant. I'll get the revised letter over to you today. Welcome aboard.";
     }

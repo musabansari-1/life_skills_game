@@ -239,6 +239,8 @@ export const ClientAttemptSchema = z.object({
   ended: z.object({ by: z.string(), reason: z.string() }).nullable(),
   turnCount: z.number().int(),
   maxTurns: z.number().int(),
+  /** first run, second chance after a failure, or rehearsal of a resolved quest (no world effects). */
+  mode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),
 });
 export type ClientAttempt = z.infer<typeof ClientAttemptSchema>;
 
