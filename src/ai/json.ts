@@ -92,7 +92,10 @@ export function repairJson(s: string): string {
     else if (ch === "}" || ch === "]") opens.pop();
   }
   if (inString) out += '"';
+  // A dangling comma before we close ("...,"yes",) would leave `,}`; strip it.
+  out = out.replace(/,\s*$/, "");
   while (opens.length) out += opens.pop();
+  out = out.replace(/,\s*([}\]])/g, "$1");
   return out;
 }
 
