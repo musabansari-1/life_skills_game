@@ -10,7 +10,7 @@ Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`.
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 69 unit + integration tests, no model calls
+pnpm test                         # 70 unit + integration tests, no model calls
 pnpm smoke                        # full loop against the configured provider, in-memory DB
 pnpm smoke aggressive             # the hostile path
 npx tsx scripts/e2e-walkthrough.ts   # Playwright UI walkthrough using local Chrome (dev server must be running)
