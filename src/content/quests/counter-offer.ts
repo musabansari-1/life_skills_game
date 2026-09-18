@@ -239,13 +239,19 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       signingBonus: "joining bonus in rupees (integer) if you are offering/raising one in this speech",
       playerMinimum: "if the player stated a minimum/floor salary, that number in rupees",
     },
-    preTurn: ({ hidden, scene }, read, text) => {
+    preTurn: ({ hidden, scene }, playerRead, text) => {
       const c: CounterOfferScene = { ...scene.custom };
-      const sig = new Set(read.signals);
+      let read = playerRead;
       const dir: string[] = [];
       const fmt = formatINR;
+      // In a salary negotiation a bare "nine point five" means lakh: re-read with that context.
+      if (read.ask === null && read.minimum === null) {
+        const salaryAmounts = extractRupeeAmounts(text, { salaryContext: true }).filter((a) => a.unit === "lakh" || a.amount >= 300000);
+        if (salaryAmounts.length) read = { ...read, ask: Math.max(...salaryAmounts.map((a) => a.amount)), signals: [...new Set([...read.signals, "clear_ask" as const])] };
+      }
       if (read.minimum !== null) c.playerStatedMinimum = read.minimum;
       if (read.ask !== null) c.highestAsk = Math.max(c.highestAsk ?? 0, read.ask);
+      const sig = new Set(read.signals);
       if (sig.has("mentioned_competing_offer")) c.playerClaimedCompetingOffer = true;
       const hostile = sig.has("aggressive_tone") || sig.has("ultimatum");
       const unrealistic = read.ask !== null && read.ask > hidden.maxBase * 1.3;
@@ -349,7 +355,7 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       if (/(another candidate|other candidate|second candidate|someone else in the (process|pipeline|final))/.test(s)) reveal.push("competing_candidate");
       if (/(rohan|hiring manager|the team) (was|were|is|are) (really )?(impressed|keen|excited)/.test(s)) reveal.push("manager_keen");
 
-      const amounts = extractRupeeAmounts(speech);
+      const amounts = extractRupeeAmounts(speech, { salaryContext: true });
       if (mentionsBonus) {
         const bonus = amounts.filter((a) => a.amount >= 10000 && a.amount <= 200000 && a.unit !== "lakh");
         if (bonus.length) proposal.signingBonus = Math.max(...bonus.map((a) => a.amount));
@@ -570,7 +576,7 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       grade: "partial",
       when: ({ scene, hidden }) => scene.custom.currentBase + scene.custom.currentSigningBonus > hidden.originalBase,
       narrative: ({ scene, hidden }) =>
-        `A small win: ${formatINR(hidden.originalBase)} to ${formatINR(scene.custom.currentBase + scene.custom.currentSigningBonus)} total. Emma could have gone to ${formatINR(hidden.maxBase)} on base.`,
+        `${scene.custom.accepted ? "" : "The call ended without a clear yes; the next morning you accepted what was on the table. "}A small win: ${formatINR(hidden.originalBase)} to ${formatINR(scene.custom.currentBase + scene.custom.currentSigningBonus)} total. Emma could have gone to ${formatINR(hidden.maxBase)} on base.`,
       consequences: ({ scene }) => [
         ...joined(scene.custom.currentBase, scene.custom.currentSigningBonus),
         styleVar("modest"),
@@ -586,7 +592,8 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       label: "Offer unchanged",
       grade: "partial",
       when: () => true,
-      narrative: ({ hidden }) => `The offer stands at ${formatINR(hidden.originalBase)}. Emma had room up to ${formatINR(hidden.maxBase)}, but nothing in the conversation gave her a reason to use it.`,
+      narrative: ({ hidden, scene }) =>
+        `${scene.custom.accepted ? "" : "The call ended without a deal. The next morning, you accepted the original offer by email. "}The offer stands at ${formatINR(hidden.originalBase)}. Emma had room up to ${formatINR(hidden.maxBase)}, but nothing in the conversation gave her a reason to use it.`,
       consequences: ({ hidden }) => [
         ...joined(hidden.originalBase, 0),
         styleVar("no_change"),

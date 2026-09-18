@@ -56,6 +56,9 @@ The shape:
 | `scene.proposalKeys` | Keys the NPC may put in `proposal` (e.g. `base`, `agreedDate`) with parsing hints. |
 | `scene.reduceProposal` | **Enforces constraints.** Clamp, make monotonic, gate on reveals. Return new `custom` + flags. |
 | `scene.inferMovesFromSpeech` | Optional deterministic safety net that reads reveals/proposals from the NPC's own words (helps weaker models). Be conservative. |
+| `scene.preTurn` | **Runs before the NPC speaks**, with `readPlayerUtterance(text)` (ask, floor, evidence, pressure, real vs conditional yes). Decide what the NPC may do this turn, update `custom`, and return `direction` lines the NPC must obey. This is how strategies produce different outcomes reliably. What the NPC then *says* is binding (up to hidden limits). |
+| `carryOver` | Lines shown on the briefing under "What carries over": how earlier choices shape this quest. The main way persistence becomes visible *before* a scene. |
+| outcome `aftermath` | Forward-looking consequence lines on the result screen ("Emma will remember you pushed hard."). |
 | `scene.director` | Per-turn behavioural notes derived from numbers ("base is at ceiling; steer to bonus"). Models act on prose, not numbers. |
 | `scene.visibleStatus` | What the player sees on screen (e.g. "Base on the table: ₹8.5L"). |
 | `scene.minTurns / maxTurns` | NPC can only close after `minTurns`; the scene ends at `maxTurns`. |
@@ -67,6 +70,16 @@ The shape:
 ### Consequences you can emit
 
 `world.career.set`, `world.var.set`, `world.flag.add/remove`, `world.reputation.delta`, `world.unlock.world/location/quest`, `world.commitment.add/resolve`, `world.decision.add`, `world.opportunity.add`, `world.person.met`, `relationship.delta`, `npc.memory.event`. See `src/engine/types/consequences.ts`.
+
+### Grades and replays
+
+- `failure` means **progress is blocked** (offer withdrawn, not put forward). Replaying a failed quest is a *second chance* whose outcome becomes canon.
+- A bad-but-consequential choice (caving to a deadline, playing an incident down) is `partial`, not `failure`: the story continues and the consequence plays out later.
+- Replaying a resolved quest is a *rehearsal*: it starts from the NPC's state at the canonical run, awards skill updates at half XP, and never applies consequences again. The result shows a comparison with the previous run.
+
+### Campaign
+
+Chapters are listed in `src/content/campaign.ts`. A chapter counts as done after a non-failed completion. Keep chapters connected: each should read at least one thing an earlier chapter wrote (a `world.var`, flag, commitment or NPC memory) and write at least one thing a later chapter reads.
 
 ### Making earlier quests matter
 

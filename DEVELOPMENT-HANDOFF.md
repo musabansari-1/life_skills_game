@@ -2,7 +2,7 @@
 
 This phase built the architecture, the core systems, and one end-to-end vertical slice (**The Counter Offer**). This document tells the next engineer/model how to continue without damaging the foundations.
 
-Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. The client/API boundary for web + future native apps is in `MOBILE-ARCHITECTURE.md`.
+Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. The client/API boundary for web + future native apps is in `MOBILE-ARCHITECTURE.md`. The latest product review (what was weak, what changed, remaining UX issues, voice and latency) is `PRODUCT-QUALITY-REVIEW.md`.
 
 ## Run it
 
@@ -10,11 +10,13 @@ Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. T
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 87 unit + integration tests, no model calls
+pnpm test                         # 110 unit + integration tests, no model calls
 pnpm smoke                        # full loop against the configured provider, in-memory DB
 pnpm smoke aggressive             # the hostile path
 npx tsx scripts/e2e-walkthrough.ts   # Playwright UI walkthrough using local Chrome (dev server must be running)
 pnpm smoke:api                    # plays the game over /api/v1 with bearer tokens, like a native app (dev server must be running)
+npx tsx scripts/strategies.ts     # 7 Counter Offer strategies side by side against the configured model (SKIP_CONCLUDE=1 for scene only)
+npx tsx scripts/latency.ts        # first-speech / turn / conclude timing against the configured model
 ```
 
 Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `claude-opus-5`), or `AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY` + `AI_MODEL=<slug>`. `AI_PROVIDER=fake` runs the whole game deterministically with heuristics — good for UI work.
@@ -40,6 +42,8 @@ Verified in this phase:
 8. **Content is code.** Quests/NPCs/worlds are typed objects in `src/content`; `validateContent()` runs in tests. Keep predicates pure.
 9. **Every persistent change emits an event.** Use `analytics.track` (DB + console) — it is also the game's history.
 10. **Clients talk to the game only through `/api/v1` and `src/contracts/api.ts`.** No game rule runs on a client. Web pages may call `server/queries.ts` directly (same DTOs). Contract changes within v1 are additive only.
+12. **Rules decide before the NPC speaks; speech is binding.** Quest `preTurn` computes what the NPC may do from `readPlayerUtterance`; what the NPC says out loud (read by `inferMovesFromSpeech`) is what gets recorded. Don't reintroduce silent post-speech clamping.
+13. **Failure grade = progress blocked.** Replays of resolved quests are rehearsals (no world effects); replays of failed ones are second chances (become canon).
 11. **Mutations must be retry-safe.** Turns use `expectedTurnCount`; conclude is claimed atomically and commits in one transaction. Keep it that way for any new mutating endpoint.
 
 ## Where things are

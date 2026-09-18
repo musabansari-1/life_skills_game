@@ -56,7 +56,7 @@ export function normalizeMoneyText(text: string): string {
   return text.toLowerCase().replace(/₹/g, " rs ").replace(/,/g, "");
 }
 
-export function extractRupeeAmounts(text: string): RupeeAmount[] {
+export function extractRupeeAmounts(text: string, opts: { salaryContext?: boolean } = {}): RupeeAmount[] {
   const t = normalizeMoneyText(text);
   const out: RupeeAmount[] = [];
 
@@ -82,15 +82,28 @@ export function extractRupeeAmounts(text: string): RupeeAmount[] {
       if (n !== null && n > 0) out.push({ amount: Math.round(n * mult), unit, index: m.index ?? 0 });
     }
   }
-  // Spoken digits without unit but in salary context: "nine seven" near "base"/"lakh" → treat as lakh if 5..30
-  for (const m of t.matchAll(/\b(nine|eight|ten|eleven|twelve|seven|six)\s+(?:point\s+)?(one|two|three|four|five|six|seven|eight|nine|zero)\b(?!\s*(?:lakh|thousand|percent|%))/g)) {
-    const raw = wordsToNumber([m[1], m[2]]);
-    if (raw === null) continue;
-    const n = raw >= 50 ? raw / 10 : raw; // "nine seven" → 97 → 9.7 lakh
-    if (n >= 5 && n <= 30 && /base|lakh|salary|offer/.test(t)) {
-      out.push({ amount: Math.round(n * 100000), unit: "lakh", index: m.index ?? 0 });
-    }
+  // Unitless salary figures ("I can do nine point two five", "nine seven base", "9.25").
+  // Only read as lakh when the caller says we're talking salary, or the text says so.
+  const salary = opts.salaryContext || /\b(base|lakh|lakhs|salary|offer|band|package|ctc)\b/.test(t);
+  const unitless: { n: number; index: number }[] = [];
+  const DIGIT = "(?:zero|one|two|three|four|five|six|seven|eight|nine)";
+  const INT = "(?:five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)";
+  const notUnit = "(?!\\s*(?:lakh|lac|thousand|percent|%|k\\b|years?|months?|x\\b))";
+  // "nine point two five" → 9.25
+  for (const m of t.matchAll(new RegExp(`\\b(${INT})\\s+point((?:\\s+${DIGIT})+)\\b${notUnit}`, "g"))) {
+    const n = wordsToNumber([m[1], "point", ...m[2].trim().split(/\s+/)]);
+    if (n !== null) unitless.push({ n, index: m.index ?? 0 });
   }
+  // "nine seven" → 9.7 (spoken digits, no "point")
+  for (const m of t.matchAll(new RegExp(`\\b(six|seven|eight|nine)\\s+(${DIGIT})\\b(?!\\s+point)${notUnit}`, "g"))) {
+    const raw = wordsToNumber([m[1], m[2]]);
+    if (raw !== null) unitless.push({ n: raw / 10, index: m.index ?? 0 });
+  }
+  // "9.25" → 9.25
+  for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2}\\.\\d{1,2})\\b${notUnit}`, "g"))) {
+    unitless.push({ n: parseFloat(m[1]), index: m.index ?? 0 });
+  }
+  if (salary) for (const u of unitless) if (u.n >= 5 && u.n <= 30) out.push({ amount: Math.round(u.n * 100000), unit: "lakh", index: u.index });
   // Sort and de-dupe by (amount)
   const seen = new Set<string>();
   return out

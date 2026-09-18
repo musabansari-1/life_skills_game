@@ -27,6 +27,14 @@ describe("extractRupeeAmounts", () => {
     expect(a("we could do 40K")).toEqual([40000]);
     expect(a("nine seven base plus the bonus")).toEqual([970000]);
     expect(a("thirty percent cost reduction")).toEqual([]);
+    // Unitless figures only count as salary when the context says so.
+    expect(a("I can do nine point two five, and a joining bonus.")).toEqual([]);
+    const sal = (s: string) => extractRupeeAmounts(s, { salaryContext: true }).map((x) => x.amount);
+    expect(sal("I can do nine point two five, and I'll throw in a forty thousand joining bonus.")).toEqual([925000, 40000]);
+    expect(sal("How about nine point five?")).toEqual([950000]);
+    expect(sal("We're locked at 9.25 with the bonus.")).toEqual([925000]);
+    expect(sal("nine seven works")).toEqual([970000]);
+    expect(sal("two point five years of experience")).toEqual([]);
   });
 });
 
@@ -53,6 +61,12 @@ describe("counter offer inferMovesFromSpeech", () => {
     const m = infer("What I can offer is the top of the band plus a joining bonus.");
     expect(m.proposal?.base).toBe(hidden.maxBase);
     expect(m.reveal).toContain("base_capped");
+  });
+
+  it("binds a unitless spoken figure ('I can do nine point two five')", () => {
+    const m = infer("That thirty percent cut is solid. Ten feels high though. I can do nine point two five, and I'll throw in a forty thousand joining bonus.");
+    expect(m.proposal?.base).toBe(925000);
+    expect(m.proposal?.signingBonus).toBe(40000);
   });
 
   it("is conservative on neutral speech", () => {
