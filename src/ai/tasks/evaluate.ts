@@ -94,7 +94,7 @@ export async function evaluateConversation(ctx: TaskContext, input: EvaluateInpu
   const { system, user } = buildEvaluationPrompt(input);
   const { value, problems } = await runStructuredTask(
     ctx,
-    { task: "evaluate", system, messages: [{ role: "user", content: user }], maxTokens: 4000, temperature: 0.2, effort: "medium", jsonMode: true },
+    { task: "evaluate", system, messages: [{ role: "user", content: user }], maxTokens: 6000, temperature: 0.2, effort: "medium", jsonMode: true },
     EvaluationSchema,
   );
   return { evaluation: sanitizeEvaluation(value, input), problems };

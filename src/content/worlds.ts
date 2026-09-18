@@ -12,7 +12,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "Where the small conversations live.",
     description: "Neighbours, favours, first impressions. The low-stakes places where habits form.",
     status: "open",
-    map: { x: 22, y: 62, size: "md" },
+    map: { x: 18, y: 70, size: "md" },
     accent: "#c9a66b",
   },
   {
@@ -21,7 +21,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "Offers, deadlines and the people who decide.",
     description: "Recruiters, managers and the conversations that shape your working life.",
     status: "open",
-    map: { x: 50, y: 40, size: "lg" },
+    map: { x: 46, y: 46, size: "lg" },
     accent: "#8fb3c9",
   },
   {
@@ -30,7 +30,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "Where a good argument is not enough.",
     description: "Persuasion under pressure: buyers, sceptics, stakeholders.",
     status: "open",
-    map: { x: 76, y: 60, size: "md" },
+    map: { x: 78, y: 68, size: "md" },
     accent: "#c98f8f",
   },
   {
@@ -39,7 +39,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "People will follow. Or not.",
     description: "Teams, hard decisions, and the weight of being the one who decides.",
     status: "locked",
-    map: { x: 62, y: 16, size: "md" },
+    map: { x: 64, y: 18, size: "md" },
     accent: "#a89bc9",
   },
   {
@@ -48,7 +48,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "A room, a microphone, and no second take.",
     description: "Public speaking and storytelling in front of audiences that react.",
     status: "locked",
-    map: { x: 30, y: 22, size: "sm" },
+    map: { x: 26, y: 24, size: "sm" },
     accent: "#c9b98f",
   },
   {
@@ -57,7 +57,7 @@ export const WORLDS: WorldDefinition[] = [
     tagline: "Pitch, hire, sell, survive.",
     description: "Investors, co-founders and first customers.",
     status: "locked",
-    map: { x: 84, y: 30, size: "sm" },
+    map: { x: 86, y: 34, size: "sm" },
     accent: "#8fc9a8",
   },
 ];

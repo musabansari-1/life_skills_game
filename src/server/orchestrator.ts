@@ -19,6 +19,7 @@ import { getQuest } from "@/content/quests";
 import { evaluateConversation } from "@/ai/tasks/evaluate";
 import { extractMemory } from "@/ai/tasks/extractMemory";
 import { generateNpcTurn } from "@/ai/tasks/npcTurn";
+import { mergeMoves, movesAreEmpty, perceiveMoves } from "@/ai/tasks/perceive";
 import type { TaskContext } from "@/ai/tasks/shared";
 import type { AILogSink } from "@/ai/logger";
 import type { LLMProvider } from "@/ai/provider";
@@ -32,7 +33,6 @@ import type { Evaluation } from "@/engine/types/evaluation";
 import type { NPCInstanceState } from "@/engine/types/npc";
 import type { AnyQuestDefinition, OutcomeContext, QuestResult, SceneContext } from "@/engine/types/quest";
 import { createSceneState, type DialogueTurn, type SceneState } from "@/engine/types/scene";
-import type { WorldState } from "@/engine/types/world";
 import { applyConsequences, checkPrerequisites, recordQuestCompletion } from "@/engine/world";
 import { defaultEnv, formatINR, type EngineEnv } from "@/engine/util";
 import type { AnalyticsSink } from "./analytics";
@@ -184,6 +184,25 @@ export class GameService {
       throw new GameError(err instanceof Error ? err.message : "The character couldn't respond.", "ai");
     }
 
+    // Safety nets for models that speak well but under-report moves:
+    // 1) deterministic inference from the NPC's own words, 2) a focused perception call.
+    let moves = out.moves;
+    if (quest.scene.inferMovesFromSpeech) {
+      try {
+        const inferred = quest.scene.inferMovesFromSpeech(out.speech, sceneCtx);
+        if ((inferred.reveal?.length ?? 0) + Object.keys(inferred.proposal ?? {}).length > 0) out.problems.push(`inferred from speech: ${JSON.stringify(inferred)}`);
+        moves = mergeMoves(moves, inferred);
+      } catch (err) {
+        console.error("[orchestrator] inferMovesFromSpeech threw", err);
+      }
+    }
+    if (movesAreEmpty(out.moves) && cleaned.split(/\s+/).length >= 3) {
+      const p = await perceiveMoves(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, playerText: cleaned, npcSpeech: out.speech, playerName: state.displayName });
+      out.problems.push(`perceive fallback used${p.problems.length ? `: ${p.problems.join("; ")}` : ""}`);
+      moves = mergeMoves(moves, p.moves);
+    }
+    out.moves = moves;
+
     const reduced = reduceNpcTurn({ scene: quest.scene, ctx: sceneCtx, moves: out.moves });
     if (reduced.rejectedReveals.length) out.problems.push(`rejected reveals: ${reduced.rejectedReveals.join(",")}`);
     await this.appendTurn(attemptId, playerIdx + 1, "npc", out.speech, "generated", out.moves);
@@ -294,7 +313,7 @@ export class GameService {
         unlockedLocationIds: applied.filter((a) => a.consequence.type === "world.unlock.location" && a.changed).map((a) => (a.consequence as { locationId: string }).locationId),
         followUpQuestIds: outcome.followUpQuestIds ?? [],
       },
-      consequencesApplied: applied.filter((a) => a.changed).map((a) => ({ type: a.consequence.type, description: a.description })),
+      consequencesApplied: applied.filter((a) => a.changed).map((a) => ({ type: a.consequence.type, description: a.description, consequence: a.consequence })),
       shareCard: buildShareCard(quest, sceneCtx, evaluation, comp.xpAwards, levelsBefore, state.competencies, comp.profile),
     };
 

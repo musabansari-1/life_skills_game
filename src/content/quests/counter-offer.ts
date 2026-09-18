@@ -9,6 +9,7 @@
 import { defineQuest } from "@/engine/types/quest";
 import type { NPCMoves, SceneState } from "@/engine/types/scene";
 import { formatINR } from "@/engine/util";
+import { extractRupeeAmounts, normalizeMoneyText } from "@/engine/parsing/numbers";
 
 export interface CounterOfferHidden extends Record<string, unknown> {
   originalBase: number;
@@ -78,7 +79,14 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
     ],
     hint: "Ask before you argue. Find out what she can move, and what she can't.",
   },
-  prerequisites: [{ type: "career_status", status: "offer_received" }],
+  prerequisites: [
+    {
+      type: "custom",
+      label: "Requires an offer on the table",
+      // Replayable after joining: the world remembers, but the scene can be practised again.
+      check: ({ world }) => world.career.status === "offer_received" || world.completedQuests.some((q) => q.questId === "counter_offer") || world.failedQuests.some((q) => q.questId === "counter_offer"),
+    },
+  ],
   objectives: [
     {
       id: "improve_offer",
@@ -215,14 +223,54 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       if (moves.wantsToEnd && (moves.endReason ?? "").toLowerCase().match(/accept|agree|deal|welcome|close/)) custom.accepted = true;
       return { custom, flags };
     },
+    inferMovesFromSpeech: (speech, { hidden, scene }) => {
+      const s = speech.toLowerCase();
+      const reveal: string[] = [];
+      const proposal: Record<string, number> = {};
+      const mentionsBonus = /(joining|sign[- ]?on|signing)\s*bonus|one[- ]time\s+(bonus|payment)|sign[- ]?on\b/.test(s);
+      const mentionsCap = /(capped|cap on|ceiling|fixed band|band is fixed|top of the band|can't (go|stretch|move) (any )?(higher|further|past)|no way around it|as high as (i|we) can)/.test(s);
+      const flexible = /(flexib|room|wiggle|some movement|could look at|can (do|offer|put together|sweeten)|there is some|might be able)/.test(s);
+      if (mentionsCap) reveal.push("base_capped");
+      if (mentionsBonus && flexible) reveal.push("bonus_flexible");
+      if (/(urgent|urgency|short-?staffed|need someone (fast|quickly|soon)|stretched|under-?staffed)/.test(s)) reveal.push("urgency_high");
+      if (/(another candidate|other candidate|second candidate|someone else in the (process|pipeline|final))/.test(s)) reveal.push("competing_candidate");
+
+      const amounts = extractRupeeAmounts(speech);
+      // Bonus: a thousands-scale amount near bonus language.
+      if (mentionsBonus) {
+        const bonus = amounts.filter((a) => a.amount >= 10000 && a.amount <= 200000 && a.unit !== "lakh");
+        if (bonus.length) proposal.signingBonus = Math.max(...bonus.map((a) => a.amount));
+      }
+      // Base: a lakh-scale amount that directly follows a committing phrase ("I can take base to …", "we can land at …").
+      // Mentions like "ten lakh is above where we can land" do not count.
+      const norm = normalizeMoneyText(speech);
+      const commitRe = /(i can (?:do|take (?:it|base|you) (?:up )?to|go (?:up )?to|get you to|offer|stretch to|move to)|we can (?:do|go (?:up )?to|land at|offer|move to|make it)|take (?:the )?base (?:up )?to|bring (?:the )?base (?:up )?to|move (?:the )?base to|land at|meet you at|i'll go to|i could (?:do|go to|stretch to))\s*/g;
+      for (const m of norm.matchAll(commitRe)) {
+        const end = (m.index ?? 0) + m[0].length;
+        const near = amounts.filter((a) => a.index >= end && a.index <= end + 30 && (a.unit === "lakh" || a.amount >= 500000)).map((a) => a.amount);
+        const ok = near.filter((n) => n > scene.custom.currentBase && n <= hidden.maxBase * 1.5);
+        if (ok.length) {
+          proposal.base = Math.min(...ok);
+          break;
+        }
+        // "I can offer the top of the band" — a commitment to the ceiling without a figure.
+        if (/^(is |you )?(the )?(very )?(top|ceiling|max(imum)?) of (the|my|our) (band|range)/.test(norm.slice(end, end + 40)) && hidden.maxBase > scene.custom.currentBase) {
+          proposal.base = hidden.maxBase;
+          if (!reveal.includes("base_capped")) reveal.push("base_capped");
+          break;
+        }
+      }
+      return { reveal, proposal };
+    },
     director: ({ hidden, scene }) => {
       const notes: string[] = [];
       const c = scene.custom;
       const headroom = hidden.maxBase - c.currentBase;
       notes.push(`On the table right now: base ${formatINR(c.currentBase)}, joining bonus ${formatINR(c.currentSigningBonus)}. Ceiling ${formatINR(hidden.maxBase)} base, ${formatINR(hidden.signingBonusMax)} bonus.`);
-      if (c.leverage >= 0.5) notes.push("They have given you real reasons to go to bat for them. You may move meaningfully if they ask with a number.");
-      else if (c.leverage > 0) notes.push("They have given you some justification. Small movement is possible if they ask clearly; otherwise ask what's driving their number.");
+      if (c.leverage >= 0.5) notes.push("They have given you real reasons to go to bat for them. You may move meaningfully if they ask with a number — say the exact new base out loud now and put it in proposal.base.");
+      else if (c.leverage > 0) notes.push("They have given you some justification. Small movement is possible if they ask clearly (name the figure, proposal.base); otherwise ask what's driving their number.");
       else notes.push("They haven't given you anything concrete yet. Don't move the number; ask what's driving their ask.");
+      notes.push("You have full authority to settle base and bonus on this call. Do not say you'll check with the team or come back later — decide now, with a number.");
       if (headroom <= 0) notes.push("Base is at the ceiling. You cannot move base at all; if they push, be honest that the band is fixed and, if they've been collaborative, steer toward the joining bonus.");
       if (c.playerStatedMinimum !== null) notes.push("They told you their minimum. You know you don't need to go much above it — anchor near it.");
       if (c.playerClaimedCompetingOffer) notes.push("They claimed a competing offer. Probe for specifics (which company, what number) before you treat it as real.");

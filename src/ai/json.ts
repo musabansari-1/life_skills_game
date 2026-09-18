@@ -33,8 +33,6 @@ export function extractJsonBlock(text: string): string | null {
 function extractBalanced(text: string): string | null {
   const start = findFirst(text, ["{", "["]);
   if (start < 0) return null;
-  const open = text[start];
-  const close = open === "{" ? "}" : "]";
   let depth = 0;
   let inString = false;
   let escape = false;

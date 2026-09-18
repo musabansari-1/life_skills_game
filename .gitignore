@@ -42,3 +42,5 @@ next-env.d.ts
 
 # local database
 /data
+
+/e2e-shots

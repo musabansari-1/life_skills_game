@@ -61,7 +61,7 @@ describe("generic scene reducer", () => {
   });
 
   it("player can end a scene; ending is idempotent", () => {
-    const { hidden, scene } = fresh();
+    const { scene } = fresh();
     const ended = endSceneByPlayer(scene);
     expect(ended.ended?.by).toBe("player");
     expect(endSceneByPlayer(ended)).toBe(ended);

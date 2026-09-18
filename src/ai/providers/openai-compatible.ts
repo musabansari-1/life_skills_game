@@ -37,7 +37,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (req.stop?.length) body.stop = req.stop;
     if (req.jsonMode) body.response_format = { type: "json_object" };
     if (stream) body.stream_options = { include_usage: true };
+    // Reasoning models spend the output budget on hidden thinking. Conversational
+    // turns want none; structured tasks want a little. (OpenRouter "reasoning" param;
+    // ignored by endpoints that don't support it.)
+    body.reasoning = req.effort === "high" ? { effort: "low" } : { enabled: false };
     return body;
+  }
+
+  /** Some open models leak <think>…</think> into content; never surface it. */
+  private stripThinking(text: string): string {
+    return text.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^<think>[\s\S]*$/i, "").trim();
   }
 
   private headers() {
@@ -59,7 +68,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (json.error) throw new AIProviderError(json.error.message ?? "Provider error", this.name, false);
     const choice = json.choices?.[0];
     return {
-      text: choice?.message?.content ?? "",
+      text: this.stripThinking(choice?.message?.content ?? ""),
       model: json.model ?? this.modelFor(req.task),
       usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 },
       stopReason: choice?.finish_reason === "length" ? "max_tokens" : choice?.finish_reason === "content_filter" ? "refusal" : "end",
@@ -73,6 +82,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const decoder = new TextDecoder();
     let buffer = "";
     let text = "";
+    let emittedLen = 0;
     let model = this.modelFor(req.task);
     let usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: CompletionResult["stopReason"] = "end";
@@ -104,14 +114,23 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const delta = evt.choices?.[0]?.delta?.content;
         if (delta) {
           text += delta;
-          onDelta(delta);
+          // Hold back deltas while inside a leaked <think> block.
+          const open = text.lastIndexOf("<think>");
+          const close = text.lastIndexOf("</think>");
+          const insideThink = open >= 0 && close < open;
+          if (!insideThink) {
+            const visible = this.stripThinking(text);
+            const emitted = visible.slice(emittedLen);
+            if (emitted) onDelta(emitted);
+            emittedLen = visible.length;
+          }
         }
         const fr = evt.choices?.[0]?.finish_reason;
         if (fr === "length") stopReason = "max_tokens";
         if (evt.usage) usage = { inputTokens: evt.usage.prompt_tokens ?? 0, outputTokens: evt.usage.completion_tokens ?? 0 };
       }
     }
-    return { text, model, usage, stopReason };
+    return { text: this.stripThinking(text), model, usage, stopReason };
   }
 
   private async fetchWithRetry(body: unknown, attempts = 2): Promise<Response> {

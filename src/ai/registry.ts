@@ -42,7 +42,7 @@ export function createProviderFromEnv(): LLMProvider {
         apiKey: env.OPENROUTER_API_KEY,
         baseUrl: env.OPENROUTER_BASE_URL,
         models,
-        defaultModel: env.AI_MODEL ?? "anthropic/claude-sonnet-4.5",
+        defaultModel: env.AI_MODEL ?? "anthropic/claude-sonnet-5",
         extraHeaders: { "HTTP-Referer": "http://localhost:3000", "X-Title": "Life Skills RPG" },
       });
     case "fake":

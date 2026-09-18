@@ -47,7 +47,7 @@ export async function extractMemory(ctx: TaskContext, input: ExtractMemoryInput)
   const { system, user } = buildMemoryPrompt(input);
   const { value, problems } = await runStructuredTask(
     ctx,
-    { task: "extract_memory", system, messages: [{ role: "user", content: user }], maxTokens: 2000, temperature: 0.3, effort: "low", jsonMode: true },
+    { task: "extract_memory", system, messages: [{ role: "user", content: user }], maxTokens: 3000, temperature: 0.3, effort: "low", jsonMode: true },
     MemoryExtractionSchema,
   );
   return { extraction: value, problems };

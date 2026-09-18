@@ -7,8 +7,11 @@ import { QUESTS, findQuest } from "@/content/quests";
 import { LOCATIONS, WORLDS } from "@/content/worlds";
 import { deriveInsight, levelProgress } from "@/engine/competency";
 import { relationshipLabel } from "@/engine/relationships";
+import type { Consequence } from "@/engine/types/consequences";
 import type { NPCInstanceState } from "@/engine/types/npc";
 import { SKILLS, SKILL_IDS, type SkillId } from "@/engine/types/skills";
+import type { WorldState } from "@/engine/types/world";
+import { formatINR } from "@/engine/util";
 import { checkPrerequisites } from "@/engine/world";
 import type { PlayerState } from "./player";
 
@@ -64,7 +67,8 @@ export function buildQuestCards(state: PlayerState): QuestCard[] {
     if (!prereq.ok) availability = "locked";
     else if (done) availability = "replayable";
     else availability = "available";
-    // A follow-up quest that was chained by consequences is "available" even if generic prereqs say otherwise.
+    // Prerequisite messages reference quest ids; show titles to players.
+    const unmet = prereq.unmet.map((u) => u.replace(/"([a-z0-9_]+)"/g, (_, id: string) => `"${findQuest(id)?.title ?? id}"`));
     return {
       id: q.id,
       title: q.title,
@@ -78,7 +82,7 @@ export function buildQuestCards(state: PlayerState): QuestCard[] {
       difficulty: q.difficulty,
       skills: q.skills,
       availability,
-      unmet: prereq.unmet,
+      unmet,
       lastOutcomeId: lastRec?.outcomeId ?? null,
       isNext: nextIds.has(q.id) && !done,
     };
@@ -165,4 +169,43 @@ export function buildDossier(state: PlayerState, npcId: string): NpcDossier | nu
 
 export function buildInsight(state: PlayerState) {
   return deriveInsight(state.competencies);
+}
+
+/**
+ * Player-facing description of an applied consequence. Returns null for
+ * internal bookkeeping (flags, vars) that should not be shown.
+ */
+export function describeConsequenceForPlayer(c: Consequence): string | null {
+  switch (c.type) {
+    case "world.career.set": {
+      const p = c.patch as Partial<WorldState["career"]>;
+      if (p.status === "employed" && p.employer) return `You joined ${p.employer}${p.role ? ` as ${p.role}` : ""}${typeof p.baseSalary === "number" ? ` at ${formatINR(p.baseSalary)} base` : ""}${typeof p.signingBonus === "number" && p.signingBonus > 0 ? ` + ${formatINR(p.signingBonus)} joining bonus` : ""}.`;
+      if (p.status === "exploring") return "The offer was withdrawn.";
+      return "Your career situation changed.";
+    }
+    case "world.unlock.world":
+      return `${WORLDS.find((w) => w.id === c.worldId)?.name ?? c.worldId} is now open.`;
+    case "world.unlock.location":
+      return `New place: ${LOCATIONS.find((l) => l.id === c.locationId)?.name ?? c.locationId}.`;
+    case "world.unlock.quest":
+      return `New quest: ${findQuest(c.questId)?.title ?? c.questId}.`;
+    case "world.reputation.delta":
+      return `Reputation in ${WORLDS.find((w) => w.id === c.domain)?.name ?? c.domain} ${c.delta >= 0 ? "+" : ""}${c.delta}.`;
+    case "world.commitment.add":
+      return `You promised ${NPCS[c.toNpcId]?.shortName ?? c.toNpcId}: ${c.description}`;
+    case "world.commitment.resolve":
+      return `A promise was ${c.status}.`;
+    case "world.decision.add":
+      return c.description;
+    case "world.opportunity.add":
+      return `Opportunity: ${c.description}`;
+    case "world.person.met":
+      return `You met ${NPCS[c.npcId]?.name ?? c.npcId}.`;
+    case "world.flag.add":
+    case "world.flag.remove":
+    case "world.var.set":
+    case "relationship.delta":
+    case "npc.memory.event":
+      return null;
+  }
 }

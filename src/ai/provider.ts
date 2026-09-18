@@ -39,7 +39,7 @@ export interface CompletionResult {
   stopReason: "end" | "max_tokens" | "refusal" | "other";
 }
 
-export type AITaskName = "npc_turn" | "npc_opening" | "evaluate" | "extract_memory" | "recommend";
+export type AITaskName = "npc_turn" | "npc_opening" | "perceive" | "evaluate" | "extract_memory" | "recommend";
 
 export interface LLMProvider {
   readonly name: string;

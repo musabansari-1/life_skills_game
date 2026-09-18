@@ -18,7 +18,7 @@ import { genericDirectorNotes } from "@/engine/scene";
 import { extractStreamingSpeech, parseNpcTurn, MOVES_CLOSE, MOVES_OPEN, SPEECH_CLOSE, SPEECH_OPEN } from "../format";
 import { logged, recentTurnsAsMessages, type TaskContext } from "./shared";
 
-const SIGNAL_GUIDE: Record<(typeof PLAYER_SIGNALS)[number], string> = {
+export const SIGNAL_GUIDE: Record<(typeof PLAYER_SIGNALS)[number], string> = {
   evidence_provided: "backed a claim with something specific and checkable",
   good_question: "asked an open question that surfaced useful information",
   acknowledged_npc: "reflected or acknowledged your point before responding",
@@ -103,6 +103,7 @@ ${director.map((d) => `- ${d}`).join("\n")}
 - Reward evidence and collaboration; resist aggression and ultimatums. Different approaches must lead to different outcomes.
 - Keep it conversational and spoken: ${input.opening ? "2-4 sentences" : "1-4 sentences"}, no lists, no stage directions, no emojis, no markdown. Write numbers the way a person says them.
 - Ask at most one question per turn.
+- Decide inside this conversation. Never defer with "I'll check and come back to you" — you have the authority the briefing gives you. When you move, name the exact figure out loud and put it in "proposal".
 
 # Output format (strict)
 First the speech, then the moves. Exactly this shape:
@@ -152,7 +153,7 @@ export async function generateNpcTurn(
     input.opening ? "npc_opening" : "npc_turn",
     () =>
       ctx.provider.stream(
-        { task: input.opening ? "npc_opening" : "npc_turn", system, messages, maxTokens: 600, temperature: 0.8, effort: "low" },
+        { task: input.opening ? "npc_opening" : "npc_turn", system, messages, maxTokens: 1200, temperature: 0.8, effort: "low" },
         (delta) => {
           raw += delta;
           if (speechDone || !onSpeechDelta) return;
@@ -167,9 +168,43 @@ export async function generateNpcTurn(
     () => problems,
   );
   if (!raw) raw = res.text;
-  const parsed = parseNpcTurn(raw);
+  let parsed = parseNpcTurn(raw);
   problems.push(...parsed.problems);
   if (res.stopReason === "max_tokens") problems.push("hit max_tokens");
+
+  // Empty speech (model rambled, truncated, or refused the format): one non-streaming retry with a nudge.
+  if (parsed.speech === "…") {
+    problems.push("empty speech; retrying");
+    const retry = await logged(
+      ctx,
+      input.opening ? "npc_opening" : "npc_turn",
+      () =>
+        ctx.provider.complete({
+          task: input.opening ? "npc_opening" : "npc_turn",
+          system,
+          messages: [...messages, { role: "user", content: "(Reply now as the character, in 1-3 spoken sentences, using exactly the <speech>…</speech><moves>{…}</moves> format. No thinking out loud.)" }],
+          maxTokens: 900,
+          temperature: 0.7,
+          effort: "low",
+        }),
+      () => problems,
+    );
+    const p2 = parseNpcTurn(retry.text);
+    if (p2.speech !== "…") {
+      parsed = p2;
+      raw = retry.text;
+      problems.push(...p2.problems.map((x) => `retry: ${x}`));
+    } else {
+      problems.push("retry also empty; using fallback line");
+      parsed = { ...p2, speech: fallbackLine(input) };
+    }
+  }
+
   if (onSpeechDelta && !speechDone) onSpeechDelta(parsed.speech, true);
   return { speech: parsed.speech, moves: parsed.moves, raw, problems };
+}
+
+/** In-character filler so a provider hiccup never breaks immersion. */
+function fallbackLine(input: NpcTurnInput): string {
+  return input.opening ? `Hi ${input.playerName}. Thanks for making the time — where would you like to start?` : "Sorry — say that again? I want to make sure I've got it right.";
 }

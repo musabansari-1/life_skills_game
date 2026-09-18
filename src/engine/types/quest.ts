@@ -86,6 +86,13 @@ export interface QuestScene<H, S> {
    * scene flags to add.
    */
   reduceProposal?: (ctx: SceneContext<H, S>, moves: NPCMoves) => { custom: S; flags?: string[] };
+  /**
+   * Deterministic safety net: infer reveals/proposals from what the NPC
+   * actually *said* (e.g. "I can do fifty thousand as a joining bonus"). Merged
+   * with the model's reported moves so a weak model that narrates a concession
+   * without reporting it still changes the scene. Must be pure and conservative.
+   */
+  inferMovesFromSpeech?: (speech: string, ctx: SceneContext<H, S>) => Partial<NPCMoves>;
   /** Turns the numbers into behavioural direction for the NPC model, each turn. */
   director: (ctx: SceneContext<H, S>) => string[];
   /** Visible-to-player scene summary, e.g. "Offer on the table: ₹8.5L". */

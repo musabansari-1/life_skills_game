@@ -76,6 +76,7 @@ async function main() {
   console.log("Emma remembers:", state.npcs.emma_kapoor.memory.lastInteractionSummary);
   console.log("Emma beliefs:", state.npcs.emma_kapoor.memory.beliefs.map((b) => b.statement).join(" | "));
   console.log("Unlocked quests:", state.world.unlockedQuests.join(", "));
+  process.exit(0);
 }
 
 main().catch((err) => {

@@ -44,6 +44,11 @@ export class FakeProvider implements LLMProvider {
         return this.opening(req);
       case "npc_turn":
         return this.npcTurn(req);
+      case "perceive": {
+        // Reuse the turn heuristics and return only the moves block.
+        const m = /<moves>([\s\S]*?)<\/moves>/.exec(this.npcTurn(req));
+        return m?.[1] ?? "{}";
+      }
       case "evaluate":
         return this.evaluation(req);
       case "extract_memory":
