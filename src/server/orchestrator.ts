@@ -11,7 +11,7 @@
  * The orchestrator is written against injected dependencies (`GameDeps`) so
  * the full loop runs in tests on an in-memory DB with the fake provider.
  */
-import { and, asc, eq, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, lt, ne, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { dialogueTurns, questAttempts } from "@/db/schema";
 import { getNPC } from "@/content/npcs";
@@ -30,7 +30,8 @@ import { applyRelationshipDelta, diffRelationship } from "@/engine/relationships
 import { abandonScene, endSceneByPlayer, reduceNpcTurn } from "@/engine/scene";
 import type { Consequence } from "@/engine/types/consequences";
 import type { Evaluation } from "@/engine/types/evaluation";
-import type { NPCInstanceState } from "@/engine/types/npc";
+import { NPCMemorySchema, type NPCInstanceState, type Relationship } from "@/engine/types/npc";
+import { readPlayerUtterance } from "@/engine/parsing/player";
 import type { AnyQuestDefinition, OutcomeContext, QuestResult, SceneContext } from "@/engine/types/quest";
 import { createSceneState, type DialogueTurn, type SceneState } from "@/engine/types/scene";
 import { applyConsequences, checkPrerequisites, recordQuestCompletion } from "@/engine/world";
@@ -70,6 +71,14 @@ export class GameError extends Error {
   }
 }
 
+/** first: canonical run. second_chance: replay after a failure (becomes canon). rehearsal: replay of a resolved quest (no world effects). */
+export type AttemptMode = "first" | "second_chance" | "rehearsal";
+
+/** Progress stages reported while a conclusion is being computed (for "the UI never feels frozen"). */
+export type ConcludeStage = "reviewing" | "remembering" | "evaluated" | "applying" | "done";
+
+const GRADE_RANK = { failure: 0, partial: 1, success: 2 } as const;
+
 export interface AttemptView {
   id: string;
   questId: string;
@@ -82,6 +91,7 @@ export interface AttemptView {
   evaluation: Evaluation | null;
   result: QuestResult | null;
   snapshotBefore: Record<string, unknown>;
+  mode: AttemptMode;
   startedAt: string;
   endedAt: string | null;
 }
@@ -109,7 +119,23 @@ export class GameService {
     if (active) await this.abandonQuest(playerId, active.id);
 
     const npcDef = getNPC(quest.npcId);
-    const npc = getOrCreateNpcState(state, quest.npcId);
+    const liveNpc = getOrCreateNpcState(state, quest.npcId);
+
+    // Replay semantics. A quest resolved before is replayed as a *rehearsal*: it
+    // starts from the same point as the canonical run (the NPC as they were then)
+    // and never changes the world again. A quest whose canonical run *failed*
+    // gets a *second chance* that becomes the new canon.
+    const wins = state.world.completedQuests.filter((q) => q.questId === questId);
+    const fails = state.world.failedQuests.filter((q) => q.questId === questId);
+    const mode: AttemptMode = wins.length ? "rehearsal" : fails.length ? "second_chance" : "first";
+    let npc = liveNpc;
+    let canonAttemptId: string | null = null;
+    if (mode === "rehearsal") {
+      canonAttemptId = wins[0].attemptId;
+      const canon = await this.deps.db.query.questAttempts.findFirst({ where: eq(questAttempts.id, canonAttemptId) });
+      const snap = canon?.snapshotBefore?.npcState as { relationship: Relationship; memory: unknown } | undefined;
+      if (snap) npc = { ...liveNpc, relationship: snap.relationship, memory: NPCMemorySchema.parse(snap.memory) };
+    }
     const hidden = quest.scene.createHidden({ world: state.world, npc });
     const custom = quest.scene.createCustom(hidden);
     const patience = quest.scene.initialPatience ? quest.scene.initialPatience({ hidden, npc }) : 70;
@@ -129,6 +155,9 @@ export class GameService {
       evaluation: null,
       result: null,
       snapshotBefore: {
+        mode,
+        canonAttemptId,
+        npcState: { relationship: npc.relationship, memory: npc.memory },
         relationship: npc.relationship,
         levels: Object.fromEntries(Object.values(state.competencies).map((s) => [s.skillId, s.level])),
         career: state.world.career,
@@ -148,7 +177,9 @@ export class GameService {
     if (quest.scene.opening.scripted) {
       openingText = quest.scene.opening.scripted(sceneCtx);
     } else {
-      const out = await generateNpcTurn(this.taskCtx(playerId, attemptId), { quest, npcDef, npcState: npc, sceneCtx, turns: [], playerName: state.displayName, opening: true });
+      const turnDirection =
+        mode === "second_chance" ? ["This is a second conversation: last time went badly (see what you remember). Acknowledge that briefly and in character, then get on with it. Don't lecture."] : undefined;
+      const out = await generateNpcTurn(this.taskCtx(playerId, attemptId), { quest, npcDef, npcState: npc, sceneCtx, turns: [], playerName: state.displayName, opening: true, turnDirection });
       openingText = out.speech;
     }
     await this.appendTurn(attemptId, 0, "npc", openingText, "generated", null);
@@ -174,7 +205,7 @@ export class GameService {
     const quest = getQuest(row.questId);
     const npcDef = getNPC(row.npcId);
     const state = await loadPlayerState(this.deps.db, playerId);
-    const npc = getOrCreateNpcState(state, row.npcId);
+    const npc = this.npcForAttempt(row, state);
     const turns = await this.loadTurns(attemptId);
     const cleaned = text.trim().slice(0, 2000);
     if (!cleaned) throw new GameError("Say something first.", "state");
@@ -215,28 +246,50 @@ export class GameService {
       playerName: state.displayName,
     };
 
+    // Read the player's words deterministically BEFORE the NPC replies, and let
+    // the quest decide what the NPC may do this turn. The NPC is told, so what
+    // it says and what the rules allow agree.
+    const read = readPlayerUtterance(cleaned);
+    let pre: ReturnType<NonNullable<typeof quest.scene.preTurn>> | undefined;
+    if (quest.scene.preTurn) {
+      try {
+        pre = quest.scene.preTurn(sceneCtx, read, cleaned);
+        if (pre.custom) sceneCtx.scene = { ...sceneCtx.scene, custom: pre.custom };
+      } catch (err) {
+        console.error("[orchestrator] preTurn threw", err);
+      }
+    }
+
     let out;
     try {
-      out = await generateNpcTurn(this.taskCtx(playerId, attemptId), { quest, npcDef, npcState: npc, sceneCtx, turns, playerName: state.displayName, opening: false }, onSpeech);
+      out = await generateNpcTurn(
+        this.taskCtx(playerId, attemptId),
+        { quest, npcDef, npcState: npc, sceneCtx, turns, playerName: state.displayName, opening: false, turnDirection: pre?.direction },
+        onSpeech,
+      );
     } catch (err) {
       // Roll back the player turn so they can retry cleanly.
       await this.deps.db.delete(dialogueTurns).where(eq(dialogueTurns.id, playerTurn.id));
       throw new GameError(err instanceof Error ? err.message : "The character couldn't respond.", "ai");
     }
 
-    // Safety nets for models that speak well but under-report moves:
-    // 1) deterministic inference from the NPC's own words, 2) a focused perception call.
-    let moves = out.moves;
+    // Merge perception: the model's own moves, the deterministic read of the
+    // player's words, the quest's pre-turn moves, and what the NPC actually said.
+    let moves = mergeMoves(out.moves, { noticed: read.signals, ...(pre?.moves ?? {}), proposal: { ...(pre?.moves?.proposal ?? {}) } });
     if (quest.scene.inferMovesFromSpeech) {
       try {
         const inferred = quest.scene.inferMovesFromSpeech(out.speech, sceneCtx);
         if ((inferred.reveal?.length ?? 0) + Object.keys(inferred.proposal ?? {}).length > 0) out.problems.push(`inferred from speech: ${JSON.stringify(inferred)}`);
         moves = mergeMoves(moves, inferred);
+        // What the character said out loud is binding: a figure read from the
+        // speech wins over a different figure in the model's structured moves.
+        moves = { ...moves, proposal: { ...moves.proposal, ...(inferred.proposal ?? {}) } };
       } catch (err) {
         console.error("[orchestrator] inferMovesFromSpeech threw", err);
       }
     }
-    if (movesAreEmpty(out.moves) && cleaned.split(/\s+/).length >= 3) {
+    // Last resort for models that under-report AND a line the rules couldn't read.
+    if (movesAreEmpty(out.moves) && read.signals.length === 0 && !pre?.moves && cleaned.split(/\s+/).length >= 3) {
       const p = await perceiveMoves(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, playerText: cleaned, npcSpeech: out.speech, playerName: state.displayName });
       out.problems.push(`perceive fallback used${p.problems.length ? `: ${p.problems.join("; ")}` : ""}`);
       moves = mergeMoves(moves, p.moves);
@@ -255,14 +308,16 @@ export class GameService {
   // ---------------------------------------------------------------- conclude
 
   /** End the scene (by the player, or because the scene already ended) and resolve everything. */
-  async concludeQuest(playerId: string, attemptId: string): Promise<AttemptView> {
+  async concludeQuest(playerId: string, attemptId: string, onProgress?: (stage: ConcludeStage) => void): Promise<AttemptView> {
     const row = await this.requireAttempt(playerId, attemptId);
     if (row.status === "completed") return this.getAttempt(playerId, attemptId);
     if (row.status !== "active" && row.status !== "evaluating") throw new GameError("This conversation was abandoned.", "state");
     const quest = getQuest(row.questId);
     const npcDef = getNPC(row.npcId);
     const state = await loadPlayerState(this.deps.db, playerId);
-    const npc = getOrCreateNpcState(state, row.npcId);
+    const mode = ((row.snapshotBefore.mode as AttemptMode | undefined) ?? "first") as AttemptMode;
+    const rehearsal = mode === "rehearsal";
+    const npc = this.npcForAttempt(row, state);
     const turns = await this.loadTurns(attemptId);
     const playerTurns = turns.filter((t) => t.speaker === "player").length;
     if (playerTurns === 0) throw new GameError("Say at least one thing before concluding.", "state");
@@ -284,10 +339,32 @@ export class GameService {
 
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene, world: state.world, npc, playerName: state.displayName };
 
-    // 1. Evaluate (AI, separate from NPC).
+    // 1. Evaluation and memory extraction are independent AI tasks: run them in
+    //    parallel (the NPC's memory is written from the transcript + final scene,
+    //    not from the evaluator's opinion). Rehearsals don't touch memory.
+    const safeProgress = (stage: ConcludeStage) => {
+      try {
+        onProgress?.(stage);
+      } catch {
+        /* a disconnected listener must not break the conclusion */
+      }
+    };
+    safeProgress("reviewing");
+    const memoryPromise = rehearsal
+      ? Promise.resolve(null)
+      : extractMemory(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, turns, playerName: state.displayName })
+          .then((r) => {
+            safeProgress("remembering");
+            return r.extraction;
+          })
+          .catch((err) => {
+            console.error("[orchestrator] memory extraction failed; continuing with scripted memory only", err);
+            return null;
+          });
     let evaluation: Evaluation;
     try {
       evaluation = (await evaluateConversation(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, turns, playerName: state.displayName })).evaluation;
+      safeProgress("evaluated");
     } catch (err) {
       await this.deps.db.update(questAttempts).set({ status: "active", updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
       throw new GameError(err instanceof Error ? `Evaluation failed: ${err.message}` : "Evaluation failed", "ai");
@@ -304,34 +381,35 @@ export class GameService {
       observations: evaluation.behaviors,
       rewards: quest.rewards,
       difficulty: quest.difficulty,
-      outcomeMultiplier: outcome.rewardMultiplier,
+      // Rehearsals are real practice, so skills still move, at half the XP.
+      outcomeMultiplier: outcome.rewardMultiplier * (rehearsal ? 0.5 : 1),
       now: this.env.now(),
     });
 
-    // 4. Memory extraction (AI) + merge (deterministic). Failure here must not lose the result.
-    let memory = npc.memory;
-    try {
-      const { extraction } = await extractMemory(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, turns, playerName: state.displayName, evaluation, outcomeLabel: outcome.label });
-      memory = mergeMemory(memory, extraction, { questId: quest.id, attemptId, env: this.env });
-    } catch (err) {
-      console.error("[orchestrator] memory extraction failed; continuing with scripted memory only", err);
-      memory = { ...memory, lastInteractionSummary: evaluation.summary.slice(0, 300), lastInteractionAt: this.env.now() };
+    // 4. Memory merge (deterministic). Failure of extraction must not lose the result.
+    const liveNpc = getOrCreateNpcState(state, row.npcId);
+    let memory = liveNpc.memory;
+    if (!rehearsal) {
+      const extraction = await memoryPromise;
+      if (extraction) memory = mergeMemory(memory, extraction, { questId: quest.id, attemptId, env: this.env });
+      else memory = { ...memory, lastInteractionSummary: `Our conversation (${quest.title}) ended: ${outcome.label.toLowerCase()}.`, lastInteractionAt: this.env.now() };
     }
+    safeProgress("applying");
 
-    // 5. Consequences.
-    const consequences: Consequence[] = [{ type: "world.person.met", npcId: npc.npcId }, ...outcome.consequences(outcomeCtx)];
+    // 5. Consequences. Rehearsals change skills only; the world keeps what really happened.
+    const consequences: Consequence[] = rehearsal ? [] : [{ type: "world.person.met", npcId: npc.npcId }, ...outcome.consequences(outcomeCtx)];
     // Commitments the NPC memory extracted from the player become world commitments too.
-    for (const c of memory.commitments) {
+    for (const c of rehearsal ? [] : memory.commitments) {
       if (c.by === "player" && c.status === "open" && c.questId === quest.id && !state.world.commitments.some((w) => w.description === c.description)) {
         consequences.push({ type: "world.commitment.add", description: c.description, toNpcId: npc.npcId, dueBy: c.dueBy });
       }
     }
     let world = state.world;
     const { world: newWorld, applied } = applyConsequences(world, consequences, { questId: quest.id, env: this.env });
-    world = recordQuestCompletion(newWorld, { questId: quest.id, attemptId, outcomeId: outcome.id, grade: outcome.grade, at: this.env.now() });
+    world = rehearsal ? state.world : recordQuestCompletion(newWorld, { questId: quest.id, attemptId, outcomeId: outcome.id, grade: outcome.grade, at: this.env.now() });
 
-    const relationshipBefore = { ...npc.relationship };
-    const touchedNpcs: Record<string, NPCInstanceState> = { [npc.npcId]: { ...npc, memory } };
+    const relationshipBefore = { ...liveNpc.relationship };
+    const touchedNpcs: Record<string, NPCInstanceState> = rehearsal ? {} : { [npc.npcId]: { ...liveNpc, memory } };
     for (const c of consequences) {
       if (c.type === "relationship.delta") {
         const target = touchedNpcs[c.npcId] ?? { ...getOrCreateNpcState(state, c.npcId) };
@@ -343,7 +421,7 @@ export class GameService {
         touchedNpcs[c.npcId] = target;
       }
     }
-    touchedNpcs[npc.npcId].timesMet += 1;
+    if (touchedNpcs[npc.npcId]) touchedNpcs[npc.npcId].timesMet += 1;
 
     // 6. Build result & persist everything.
     const levelsBefore = (row.snapshotBefore.levels ?? {}) as Record<string, number>;
@@ -366,14 +444,18 @@ export class GameService {
         followUpQuestIds: outcome.followUpQuestIds ?? [],
       },
       consequencesApplied: applied.filter((a) => a.changed).map((a) => ({ type: a.consequence.type, description: a.description, consequence: a.consequence })),
+      aftermath: rehearsal ? [] : safeLines(() => outcome.aftermath?.(outcomeCtx) ?? []),
+      mode,
+      comparison: null,
       shareCard: buildShareCard(quest, sceneCtx, evaluation, comp.xpAwards, levelsBefore, state.competencies, comp.profile),
     };
+    if (mode !== "first") result.comparison = await this.compareWithPrevious(playerId, quest.id, attemptId, result, evaluation);
 
     // All persistent effects of the conclusion commit together, or not at all.
     const now = this.env.now();
     await this.deps.db.transaction(async (tx) => {
       const t = tx as unknown as Db;
-      await saveWorldState(t, playerId, world);
+      if (!rehearsal) await saveWorldState(t, playerId, world);
       await saveCompetencies(t, playerId, comp.profile);
       for (const n of Object.values(touchedNpcs)) await saveNpcState(t, playerId, n);
       await t.update(questAttempts).set({ status: "completed", scene, evaluation, result, endedAt: now, updatedAt: now }).where(eq(questAttempts.id, attemptId));
@@ -381,7 +463,7 @@ export class GameService {
 
     // 7. Events.
     const a = this.deps.analytics;
-    await a.track(playerId, outcome.grade === "failure" ? "quest_failed" : "quest_completed", { questId: quest.id, attemptId, outcomeId: outcome.id, score: evaluation.overallScore, turns: playerTurns });
+    await a.track(playerId, outcome.grade === "failure" ? "quest_failed" : "quest_completed", { questId: quest.id, attemptId, outcomeId: outcome.id, score: evaluation.overallScore, turns: playerTurns, mode });
     for (const x of comp.xpAwards) {
       await a.track(playerId, "player.xp_gained", { skill: x.skill, xp: x.xp });
       if (x.levelAfter > x.levelBefore) await a.track(playerId, "player.level_up", { skill: x.skill, level: x.levelAfter });
@@ -391,10 +473,41 @@ export class GameService {
       const before = n.npcId === npc.npcId ? relationshipBefore : state.npcs[n.npcId]?.relationship ?? n.relationship;
       await a.track(playerId, "npc.relationship_changed", { npcId: n.npcId, delta: diffRelationship(before, n.relationship) });
     }
-    await a.track(playerId, "npc.memory_updated", { npcId: npc.npcId, facts: memory.facts.length, beliefs: memory.beliefs.length, events: memory.events.length });
+    if (!rehearsal) await a.track(playerId, "npc.memory_updated", { npcId: npc.npcId, facts: memory.facts.length, beliefs: memory.beliefs.length, events: memory.events.length });
     for (const ap of applied.filter((x) => x.changed)) await a.track(playerId, "world.consequence_applied", { questId: quest.id, type: ap.consequence.type, description: ap.description });
 
+    safeProgress("done");
     return this.getAttempt(playerId, attemptId);
+  }
+
+  /** Compare a replay with the most recent earlier completed run of the same quest. */
+  private async compareWithPrevious(playerId: string, questId: string, attemptId: string, result: QuestResult, evaluation: Evaluation): Promise<QuestResult["comparison"]> {
+    const prev = await this.deps.db.query.questAttempts.findFirst({
+      where: and(eq(questAttempts.playerId, playerId), eq(questAttempts.questId, questId), eq(questAttempts.status, "completed"), ne(questAttempts.id, attemptId)),
+      orderBy: desc(questAttempts.endedAt),
+    });
+    if (!prev?.result || !prev.evaluation) return null;
+    const prevLines = new Map(prev.result.shareCard.lines.map((l) => [l.label, l.after]));
+    const lines = result.shareCard.lines.map((l) => ({ label: l.label, previous: prevLines.get(l.label) ?? "—", now: l.after }));
+    const improved =
+      GRADE_RANK[result.grade] > GRADE_RANK[prev.result.grade] ||
+      (GRADE_RANK[result.grade] === GRADE_RANK[prev.result.grade] && evaluation.overallScore > prev.evaluation.overallScore);
+    return {
+      previousOutcomeLabel: prev.result.outcomeLabel,
+      previousGrade: prev.result.grade,
+      previousScore: prev.evaluation.overallScore,
+      score: evaluation.overallScore,
+      lines,
+      improved,
+    };
+  }
+
+  /** The NPC as this attempt sees them: rehearsals replay against the NPC as they were at the canonical run. */
+  private npcForAttempt(row: { npcId: string; snapshotBefore: Record<string, unknown> }, state: PlayerState): NPCInstanceState {
+    const live = getOrCreateNpcState(state, row.npcId);
+    const snap = row.snapshotBefore.npcState as { relationship: Relationship; memory: unknown } | undefined;
+    if (row.snapshotBefore.mode === "rehearsal" && snap) return { ...live, relationship: snap.relationship, memory: NPCMemorySchema.parse(snap.memory) };
+    return live;
   }
 
   // ---------------------------------------------------------------- abandon
@@ -415,7 +528,7 @@ export class GameService {
     const quest = getQuest(row.questId);
     const turns = await this.loadTurns(attemptId);
     const state = await loadPlayerState(this.deps.db, playerId);
-    const npc = getOrCreateNpcState(state, row.npcId);
+    const npc = this.npcForAttempt(row, state);
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: row.scene, world: state.world, npc, playerName: state.displayName };
     return {
       id: row.id,
@@ -429,6 +542,7 @@ export class GameService {
       evaluation: row.evaluation ?? null,
       result: row.result ?? null,
       snapshotBefore: row.snapshotBefore,
+      mode: ((row.snapshotBefore.mode as AttemptMode | undefined) ?? "first") as AttemptMode,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
     };
@@ -461,6 +575,15 @@ export class GameService {
     const turn: DialogueTurn = { id: this.env.id(), index: idx, speaker, text, modality, moves, createdAt: this.env.now() };
     await this.deps.db.insert(dialogueTurns).values({ id: turn.id, attemptId, idx, speaker, text, modality, moves, createdAt: turn.createdAt });
     return turn;
+  }
+}
+
+function safeLines(fn: () => string[]): string[] {
+  try {
+    return fn().filter(Boolean);
+  } catch (err) {
+    console.error("[orchestrator] aftermath threw", err);
+    return [];
   }
 }
 

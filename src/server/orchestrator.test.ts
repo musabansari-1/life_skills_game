@@ -25,7 +25,11 @@ async function seed() {
   const now = "2026-01-01T00:00:00.000Z";
   await db.insert(users).values({ id: "u1", email: "a@b.c", passwordHash: "x", createdAt: now });
   await db.insert(players).values({ id: playerId, userId: "u1", displayName: "Asha", onboardingCompletedAt: now, competencies: createEmptyProfile(), createdAt: now, updatedAt: now });
-  await db.insert(worldStates).values({ playerId, state: createInitialWorldState(), version: 1, updatedAt: now });
+  // Most tests here exercise The Counter Offer: start the player at that point of the campaign.
+  const world = createInitialWorldState();
+  world.career.status = "offer_received";
+  world.unlockedQuests.push("counter_offer");
+  await db.insert(worldStates).values({ playerId, state: world, version: 1, updatedAt: now });
 }
 
 beforeEach(async () => {

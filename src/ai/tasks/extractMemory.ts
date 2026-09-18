@@ -16,17 +16,19 @@ export interface ExtractMemoryInput {
   sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>>;
   turns: DialogueTurn[];
   playerName: string;
-  evaluation: Evaluation;
-  outcomeLabel: string;
+  /** Optional: extraction runs in parallel with evaluation, so these are usually absent. */
+  evaluation?: Evaluation;
+  outcomeLabel?: string;
 }
 
 export function buildMemoryPrompt(input: ExtractMemoryInput): { system: string; user: string } {
   const { npcDef, playerName, quest, sceneCtx, outcomeLabel } = input;
+  const outcomeLine = outcomeLabel ? `Outcome: ${outcomeLabel}.` : "Work out how it ended from the transcript and the final state.";
   const system = `You maintain the long-term memory of ${npcDef.name} (${npcDef.role}, ${npcDef.organisation}), a persistent character in a game. After each conversation with ${playerName}, you extract what ${npcDef.shortName} would genuinely remember. Write from ${npcDef.shortName}'s point of view, in ${npcDef.shortName}'s voice, first person.
 
 Personality (colours what they notice): ${npcDef.personality.summary}
 
-Scenario: ${quest.title}. Outcome: ${outcomeLabel}.
+Scenario: ${quest.title}. ${outcomeLine}
 Final state: ${JSON.stringify(sceneCtx.scene.custom)}
 
 Rules:
@@ -39,7 +41,8 @@ Rules:
 Return ONLY a JSON object:
 {"facts":[{"key":"","statement":"","confidence":0.9}],"beliefs":[{"key":"","statement":"","valence":0,"strength":0,"evidence":""}],"events":[{"summary":"","importance":0.8,"emotionalTone":"positive|negative|mixed|neutral"}],"commitments":[{"by":"player|npc","description":"","dueBy":null}],"interactionSummary":""}`;
 
-  const user = `# Transcript\n${renderTranscript(input.turns, playerName, npcDef.shortName)}\n\n# Evaluator's summary (for context only; remember as ${npcDef.shortName}, not as a judge)\n${input.evaluation.summary}\n\nExtract ${npcDef.shortName}'s memory now.`;
+  const evaluatorContext = input.evaluation ? `\n\n# Evaluator's summary (for context only; remember as ${npcDef.shortName}, not as a judge)\n${input.evaluation.summary}` : "";
+  const user = `# Transcript\n${renderTranscript(input.turns, playerName, npcDef.shortName)}${evaluatorContext}\n\nExtract ${npcDef.shortName}'s memory now.`;
   return { system, user };
 }
 

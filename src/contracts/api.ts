@@ -139,6 +139,20 @@ export const WorldOverviewSchema = z.object({
   people: z.array(PersonSummarySchema),
   openCommitments: z.array(z.object({ id: z.string(), description: z.string(), toNpcName: z.string() })),
   activeAttempt: ActiveAttemptRefSchema.nullable(),
+  /** The connected story: where the player is. */
+  campaign: z
+    .object({
+      title: z.string(),
+      chapters: z.array(z.object({ questId: z.string(), label: z.string(), state: z.enum(["done", "current", "locked"]) })),
+      completed: z.number().int(),
+      total: z.number().int(),
+      currentQuestId: z.string().nullable(),
+      finished: z.boolean(),
+    })
+    .nullable()
+    .default(null),
+  /** Recent decisions, newest first: the player's story so far. */
+  story: z.array(z.string()).default([]),
   /** Monotonic world-state version; clients can skip re-rendering when unchanged. */
   stateVersion: z.number().int(),
 });
@@ -185,6 +199,12 @@ export const QuestBriefingSchema = z.object({
   unmet: z.array(z.string()),
   lastOutcomeLabel: z.string().nullable(),
   npc: DossierSchema,
+  /** How earlier choices shape this quest ("Emma remembers you said nine lakh would do."). */
+  carryOver: z.array(z.string()).default([]),
+  /** What starting it now means: first run, second chance after a failure, or a rehearsal of a resolved quest. */
+  replayMode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),
+  /** Position in the campaign, if the quest is a chapter. */
+  chapter: z.object({ index: z.number().int(), total: z.number().int(), title: z.string() }).nullable().default(null),
 });
 export type QuestBriefingView = z.infer<typeof QuestBriefingSchema>;
 
@@ -311,5 +331,20 @@ export const DebriefSchema = z.object({
   /** Player's own lines, keyed by turn index, so key moments can quote them. */
   playerTurnTexts: z.record(z.string(), z.string()),
   nextQuest: z.object({ id: z.string(), title: z.string(), tagline: z.string(), npcName: z.string(), isFollowUp: z.boolean() }).nullable(),
+  /** Forward-looking consequences ("Emma will remember you pushed hard."). */
+  aftermath: z.array(z.string()).default([]),
+  mode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),
+  comparison: z
+    .object({
+      previousOutcomeLabel: z.string(),
+      previousGrade: z.enum(["success", "partial", "failure"]),
+      previousScore: z.number(),
+      score: z.number(),
+      lines: z.array(z.object({ label: z.string(), previous: z.string(), now: z.string() })),
+      improved: z.boolean(),
+    })
+    .nullable()
+    .default(null),
+  chapter: z.object({ index: z.number().int(), total: z.number().int(), title: z.string(), finished: z.boolean() }).nullable().default(null),
 });
 export type Debrief = z.infer<typeof DebriefSchema>;

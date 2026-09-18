@@ -100,6 +100,6 @@ describe("checkPrerequisites", () => {
     );
     expect(r.ok).toBe(false);
     expect(r.unmet).toHaveLength(5);
-    expect(checkPrerequisites([{ type: "career_status", status: "offer_received" }], base).ok).toBe(true);
+    expect(checkPrerequisites([{ type: "career_status", status: "interviewing" }], base).ok).toBe(true);
   });
 });

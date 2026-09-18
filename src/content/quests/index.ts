@@ -9,8 +9,19 @@ import { counterOffer } from "./counter-offer";
 import { firstDayNovaLabs } from "./first-day-nova-labs";
 import { introduceYourself } from "./introduce-yourself";
 import { pushBackOnDeadline } from "./push-back-on-deadline";
+import { recruiterScreening } from "./recruiter-screening";
+import { hiringManagerInterview } from "./hiring-manager-interview";
+import { statusUpdate } from "./status-update";
 
-export const QUESTS: AnyQuestDefinition[] = [introduceYourself, counterOffer, firstDayNovaLabs, pushBackOnDeadline].sort((a, b) => a.order - b.order);
+export const QUESTS: AnyQuestDefinition[] = [
+  introduceYourself,
+  recruiterScreening,
+  hiringManagerInterview,
+  counterOffer,
+  firstDayNovaLabs,
+  pushBackOnDeadline,
+  statusUpdate,
+].sort((a, b) => a.order - b.order);
 
 const byId = new Map(QUESTS.map((q) => [q.id, q]));
 

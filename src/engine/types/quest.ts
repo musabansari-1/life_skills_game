@@ -18,6 +18,7 @@ import type { NPCMoves, SceneState } from "./scene";
 import type { SkillId } from "./skills";
 import type { WorldState } from "./world";
 import type { CompetencyProfile } from "./skills";
+import type { PlayerRead } from "../parsing/player";
 
 // ---------- Prerequisites ----------
 
@@ -93,6 +94,13 @@ export interface QuestScene<H, S> {
    * without reporting it still changes the scene. Must be pure and conservative.
    */
   inferMovesFromSpeech?: (speech: string, ctx: SceneContext<H, S>) => Partial<NPCMoves>;
+  /**
+   * Runs BEFORE the NPC replies, with a deterministic read of the player's line.
+   * Lets the quest decide what the NPC may do this turn (e.g. how far an offer
+   * can move) and tell the NPC in `direction`, so what the NPC *says* and what
+   * the rules *allow* agree. Must be pure. `moves` are merged into the NPC's own.
+   */
+  preTurn?: (ctx: SceneContext<H, S>, read: PlayerRead, playerText: string) => { custom?: S; moves?: Partial<NPCMoves>; direction?: string[] };
   /** Turns the numbers into behavioural direction for the NPC model, each turn. */
   director: (ctx: SceneContext<H, S>) => string[];
   /** Visible-to-player scene summary, e.g. "Offer on the table: ₹8.5L". */
@@ -120,6 +128,8 @@ export interface OutcomeBranch<H, S> {
   /** XP multiplier applied to computed rewards. */
   rewardMultiplier: number;
   followUpQuestIds?: string[];
+  /** Forward-looking consequences shown to the player ("Emma will remember you pushed hard."). */
+  aftermath?: (ctx: OutcomeContext<H, S>) => string[];
 }
 
 // ---------- Rewards ----------
@@ -164,6 +174,11 @@ export interface QuestDefinition<H = Record<string, unknown>, S = Record<string,
   rewards: RewardProfile;
   /** Which NPC memory this quest wants surfaced to the model (defaults to all). */
   memoryFocus?: (memory: NPCMemory) => NPCMemory;
+  /**
+   * Shown on the briefing under "What carries over": how earlier choices shape
+   * this quest ("Emma remembers you said nine lakh would do."). Pure.
+   */
+  carryOver?: (ctx: PrerequisiteContext) => string[];
 }
 
 /** Type-erased quest for registries. Use `defineQuest` to author. */
@@ -211,6 +226,25 @@ export const QuestResultSchema = z.object({
   objectivesAchieved: z.array(z.string()),
   rewards: QuestRewardsSchema,
   consequencesApplied: z.array(z.unknown()),
+  /** Forward-looking consequence lines for the player. */
+  aftermath: z.array(z.string()).default([]),
+  /**
+   * first: the canonical run. second_chance: replay after a failure; becomes canon.
+   * rehearsal: replay of a resolved quest; skills improve but the world keeps what really happened.
+   */
+  mode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),
+  /** How this run compares with the previous one of the same quest (replays only). */
+  comparison: z
+    .object({
+      previousOutcomeLabel: z.string(),
+      previousGrade: z.enum(["success", "partial", "failure"]),
+      previousScore: z.number(),
+      score: z.number(),
+      lines: z.array(z.object({ label: z.string(), previous: z.string(), now: z.string() })),
+      improved: z.boolean(),
+    })
+    .nullable()
+    .default(null),
   /** Snapshot for the share card. */
   shareCard: z.object({
     title: z.string(),

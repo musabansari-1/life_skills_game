@@ -67,9 +67,14 @@ ${facets}
 # Feedback quality bar
 Bad: "Great job. Be more confident."
 Good: "You rejected the deadline clearly, but you didn't offer an alternative. A stronger response would protect quality while proposing a narrower Friday deliverable and a Monday completion date."
-Every improvement must include a concrete "betterMove": what the player could literally have said.
-Strengths must be real; if the player did poorly, list fewer strengths, not weaker ones.
+Every improvement must include a concrete "betterMove": what the player could literally have said, in their voice, one or two sentences.
+Strengths must be real; if the player did poorly, list fewer strengths, not weaker ones. Zero strengths is allowed.
+Never use generic coaching phrases ("be more confident", "great communication", "work on your skills"). Name the specific behaviour and the specific moment.
 Only report behaviors you actually observed; score 0.5 means neutral. Include negative behaviors (e.g. protecting_leverage 0.1 if they revealed their minimum).
+Every "evidence" field must quote the player's own words verbatim (a short phrase is fine). Never quote the other character as evidence of the player's skill.
+Don't be gamed: saying "I have data" or "I'm confident" is not evidence or confidence. A very short conversation can't demonstrate much; score accordingly.
+Use the ground truth: say what the hidden constraints were when it helps the player learn (e.g. "base was capped at ₹9.7L; the bonus was the lever").
+Keep it tight: summary under 70 words, at most 3 strengths, at most 3 improvements, at most 3 keyMoments, evidence under 25 words.
 keyMoments.turnIndex must be one of the player's turn indexes: ${playerTurnIndexes.join(", ")}.
 
 # Output
@@ -104,12 +109,47 @@ export async function evaluateConversation(ctx: TaskContext, input: EvaluateInpu
 export function sanitizeEvaluation(ev: Evaluation, input: EvaluateInput): Evaluation {
   const criterionIds = new Set(input.quest.rubric.map((c) => c.id));
   const objectiveIds = new Set(input.quest.objectives.map((o) => o.id));
-  const playerTurns = new Set(input.turns.filter((t) => t.speaker === "player").map((t) => t.index));
+  const player = input.turns.filter((t) => t.speaker === "player");
+  const playerTurns = new Set(player.map((t) => t.index));
+  const playerText = player.map((t) => t.text).join(" ");
+  const playerWords = playerText.split(/\s+/).filter(Boolean).length;
+
+  const behaviors = ev.behaviors.map((b) => {
+    let score = b.score;
+    let note = b.note;
+    // Grounding: a strong demonstration must be visible in the player's actual words.
+    if (score >= 0.7 && !isGroundedInPlayerText(b.evidence, playerText)) {
+      score = 0.55;
+      note = `${note ? `${note} ` : ""}(capped: evidence not found in the player's words)`.slice(0, 400);
+    }
+    // A very short conversation can't demonstrate much.
+    if (playerWords < 15 && score > 0.6) score = 0.6;
+    return { ...b, score, note };
+  });
+
   return {
     ...ev,
+    behaviors,
+    strengths: ev.strengths.slice(0, 3),
+    improvements: ev.improvements.slice(0, 3),
     rubricScores: ev.rubricScores.filter((r) => criterionIds.has(r.criterionId)),
     objectiveResults: ev.objectiveResults.filter((o) => objectiveIds.has(o.objectiveId)),
-    keyMoments: ev.keyMoments.filter((k) => playerTurns.size === 0 || playerTurns.has(k.turnIndex)),
-    overallScore: Math.round(ev.overallScore),
+    keyMoments: ev.keyMoments.filter((k) => playerTurns.size === 0 || playerTurns.has(k.turnIndex)).slice(0, 3),
+    overallScore: Math.round(playerWords < 15 ? Math.min(ev.overallScore, 55) : ev.overallScore),
   };
+}
+
+/** True when most of the meaningful words in an evidence quote appear in what the player said. */
+export function isGroundedInPlayerText(evidence: string, playerText: string): boolean {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+  const ev = norm(evidence);
+  if (ev.length === 0) return false;
+  const said = new Set(norm(playerText));
+  const hits = ev.filter((w) => said.has(w)).length;
+  return hits / ev.length >= 0.6;
 }

@@ -33,6 +33,7 @@ export const PLAYER_SIGNALS = [
   "mentioned_competing_offer", // claimed another offer
   "asked_about_total_comp", // asked about bonus / equity / non-base components
   "deflected", // dodged a direct question
+  "accepted_terms", // agreed to what is currently on the table
   "silence_or_filler", // empty turn / no content
 ] as const;
 export const PlayerSignalSchema = z.enum(PLAYER_SIGNALS);

@@ -100,6 +100,8 @@ function salvageMoves(text: string): NPCMoves {
 /** Strip stage directions, markdown and stray tags so TTS reads only dialogue. */
 export function cleanSpeech(s: string): string {
   return s
+    .replace(/\{[\s\S]*?"(noticed|reveal|proposal|wantsToEnd|patienceDelta)"[\s\S]*$/, "") // leaked moves JSON
+    .replace(/```[\s\S]*$/, "")
     .replace(/<\/?[a-z]+>/gi, "")
     .replace(/\*[^*\n]{0,80}\*/g, "") // *smiles*, *pauses*
     .replace(/\((?![^)]*[\d₹$])[^)]{0,40}\)/g, "") // (leans back) — but keep "(about ten lakh)"-style content with numbers

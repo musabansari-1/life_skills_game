@@ -37,6 +37,7 @@ export const SIGNAL_GUIDE: Record<(typeof PLAYER_SIGNALS)[number], string> = {
   mentioned_competing_offer: "claimed to have another offer or option",
   asked_about_total_comp: "asked about bonus, equity, or non-base components",
   deflected: "dodged a direct question",
+  accepted_terms: "agreed to what is currently on the table (a real yes, not a conditional one)",
   silence_or_filler: "empty turn — nothing of substance",
 };
 
@@ -49,6 +50,11 @@ export interface NpcTurnInput {
   playerName: string;
   /** True for the very first line of the scene. */
   opening: boolean;
+  /**
+   * Rules-derived direction for THIS turn (from the quest's preTurn read of the
+   * player's words), e.g. "You may move base to at most nine point three lakh". Highest priority.
+   */
+  turnDirection?: string[];
 }
 
 export function buildNpcSystemPrompt(input: NpcTurnInput): string {
@@ -96,14 +102,18 @@ ${revealable}
 # Direction for this turn (from the scene state — follow it)
 ${director.map((d) => `- ${d}`).join("\n")}
 
-# Behaviour rules
-- React to what ${playerName} actually said. Push back, disagree, ask follow-ups, or challenge vague claims when your character would. Never simply agree to please them.
-- Notice contradictions with earlier statements and call them out in character.
-- Do not volunteer hidden information unprompted. Make them earn it with good questions, evidence or rapport.
-- Reward evidence and collaboration; resist aggression and ultimatums. Different approaches must lead to different outcomes.
-- Keep it conversational and spoken: ${input.opening ? "2-4 sentences" : "1-4 sentences"}, no lists, no stage directions, no emojis, no markdown. Write numbers the way a person says them.
-- Ask at most one question per turn.
-- Decide inside this conversation. Never defer with "I'll check and come back to you" — you have the authority the briefing gives you. When you move, name the exact figure out loud and put it in "proposal".
+${input.turnDirection?.length ? `# What the game rules say about ${playerName}'s last line (binding: obey exactly)\n${input.turnDirection.map((d) => `- ${d}`).join("\n")}\n\n` : ""}# How you talk
+- This is a live spoken call. Usually one or two sentences, never more than three. Aim for under 35 words. Short turns, like a real person.
+- ${input.opening ? "Open naturally in two or three sentences. If you have history with them, let it show in one small, natural reference, not a recap." : "Respond to what they just said, not to what a helpful assistant would say."}
+- No lists, stage directions, emojis or markdown. Say numbers the way a person says them ("nine point two lakh", "forty thousand").
+- At most one question per turn, and plenty of turns need none.
+
+# How you behave
+- You are ${npcDef.shortName}, with your own goals. You are not ${playerName}'s coach or friend. Never advise them how to negotiate, what to ask for, or whether they're "sure". If they say yes, take the yes and close.
+- Say no plainly when the answer is no. You don't have to justify every refusal. Hold your position under pressure; give ground only when they give you a real reason.
+- Push back on vague claims. If something contradicts what they said earlier (today or in what you remember), call it out briefly.
+- Hidden information stays hidden unless they earn it with a good question, real evidence or genuine rapport.
+- Decide on this call. Never say you'll check and come back: you have the authority the briefing gives you. When you move, say the exact figure out loud and put the same figure in "proposal". Never say a figure the rules above don't allow.
 
 # Output format (strict)
 First the speech, then the moves. Exactly this shape:

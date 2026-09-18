@@ -33,7 +33,7 @@ export interface LocationDefinition {
 // ---------- Dynamic per-player state ----------
 
 export const CareerStateSchema = z.object({
-  status: z.enum(["exploring", "interviewing", "offer_received", "employed"]).default("offer_received"),
+  status: z.enum(["exploring", "interviewing", "offer_received", "employed"]).default("interviewing"),
   employer: z.string().nullable().default(null),
   role: z.string().nullable().default(null),
   baseSalary: z.number().nullable().default(null),
@@ -100,6 +100,9 @@ export type WorldState = z.infer<typeof WorldStateSchema>;
 
 export function createInitialWorldState(): WorldState {
   return WorldStateSchema.parse({
+    // The story starts before the job: you've applied to Nova Labs and have a screening call booked.
+    career: { status: "interviewing" },
+    unlockedQuests: ["recruiter_screening"],
     unlockedWorlds: ["everyday_district", "career_city"],
     unlockedLocations: ["everyday_district.neighbourhood", "career_city.nova_labs_hr"],
   });

@@ -22,6 +22,7 @@ import { loginAccount, onboardPlayer, registerAccount, ValidationError } from ".
 import { AuthError, resolvePlayerFromToken, revokeSession } from "./auth";
 import { GameError, GameService } from "./orchestrator";
 import { attemptEnvelope, debrief, dossier, questBriefing, toClientAttempt, worldOverview } from "./queries";
+import { loadPlayerState, saveWorldState } from "./player";
 import { eq } from "drizzle-orm";
 
 let db: Db;
@@ -36,6 +37,10 @@ beforeEach(async () => {
   playerId = session.player.playerId;
   token = session.token;
   await onboardPlayer(db, playerId, { displayName: "Asha" });
+  const st = await loadPlayerState(db, playerId);
+  st.world.career.status = "offer_received";
+  st.world.unlockedQuests.push("counter_offer");
+  await saveWorldState(db, playerId, st.world);
 });
 
 describe("auth for native clients (bearer tokens)", () => {

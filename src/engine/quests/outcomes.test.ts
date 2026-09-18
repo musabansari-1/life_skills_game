@@ -23,7 +23,7 @@ const evaluation: Evaluation = {
 function make(custom: Partial<CounterOfferScene>, patience = 70, ended: SceneState["ended"] = null) {
   const npc = createNPCInstanceState(emma);
   const hidden = counterOffer.scene.createHidden({ world: createInitialWorldState(), npc }) as CounterOfferHidden;
-  const scene = { ...createSceneState({ ...counterOffer.scene.createCustom(hidden), ...custom }, patience), ended };
+  const scene = { ...createSceneState({ ...counterOffer.scene.createCustom(hidden), ...custom }, patience), ended, signalCounts: { evidence_provided: 1 } };
   const ctx = { hidden, scene, world: createInitialWorldState(), npc, playerName: "Asha" };
   const objectivesAchieved = resolveObjectives(counterOffer, ctx, evaluation);
   return { ctx: { ...ctx, evaluation, objectivesAchieved }, objectivesAchieved };
@@ -42,7 +42,7 @@ describe("counter offer outcomes", () => {
     expect(resolveOutcome(counterOffer, ctx).id).toBe("strong_deal");
     expect(objectivesAchieved.has("improve_offer")).toBe(true);
     expect(objectivesAchieved.has("keep_rapport")).toBe(true);
-    expect(objectivesAchieved.has("justify_with_evidence")).toBe(true); // from evaluator
+    expect(objectivesAchieved.has("justify_with_evidence")).toBe(true); // rules: evidence was provided
     expect(objectivesAchieved.has("protect_minimum")).toBe(true);
   });
 

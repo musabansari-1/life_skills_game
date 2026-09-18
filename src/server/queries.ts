@@ -6,6 +6,7 @@
  * Nothing here may leak hidden NPC state.
  */
 import { NPCS } from "@/content/npcs";
+import { CAMPAIGN, campaignProgress, chapterIndex } from "@/content/campaign";
 import { QUESTS, findQuest } from "@/content/quests";
 import { getLocation, getWorld } from "@/content/worlds";
 import { relationshipLabel } from "@/engine/relationships";
@@ -66,6 +67,8 @@ function careerLabel(state: PlayerState): string {
   const c = state.world.career;
   if (c.status === "employed" && c.employer) return `${c.role ?? "Working"} at ${c.employer}${c.baseSalary ? ` · ${formatINR(c.baseSalary)}` : ""}`;
   if (c.status === "offer_received") return "Offer on the table from Nova Labs";
+  if (c.status === "interviewing") return "Interviewing with Nova Labs";
+  if (state.world.flags.includes("nova_labs.offer_withdrawn")) return "Nova Labs withdrew the offer";
   return "Between things";
 }
 
@@ -91,6 +94,8 @@ export async function worldOverview(game: GameService, playerId: string): Promis
       .filter((x) => x.status === "open")
       .map((x) => ({ id: x.id, description: x.description, toNpcName: NPCS[x.toNpcId]?.shortName ?? x.toNpcId })),
     activeAttempt,
+    campaign: campaignProgress(state.world),
+    story: [...state.world.decisions].reverse().slice(0, 5).map((d) => d.description),
     stateVersion: state.world.version,
   };
 }
@@ -140,6 +145,9 @@ export async function questBriefing(game: GameService, playerId: string, questId
     unmet: card.unmet,
     lastOutcomeLabel: last ? (quest.outcomes.find((o) => o.id === last.outcomeId)?.label ?? null) : null,
     npc: dossierView(state, quest.npcId),
+    carryOver: safeCarryOver(quest, state),
+    replayMode: state.world.completedQuests.some((q) => q.questId === quest.id) ? "rehearsal" : state.world.failedQuests.some((q) => q.questId === quest.id) ? "second_chance" : "first",
+    chapter: chapterIndex(quest.id) ? { index: chapterIndex(quest.id)!, total: CAMPAIGN.chapters.length, title: CAMPAIGN.title } : null,
   };
 }
 
@@ -176,7 +184,22 @@ export async function debrief(game: GameService, playerId: string, attemptId: st
     skillLabels: Object.fromEntries((Object.keys(SKILLS) as SkillId[]).map((k) => [k, SKILLS[k].label])),
     playerTurnTexts: Object.fromEntries(attempt.turns.filter((t) => t.speaker === "player").map((t) => [String(t.index), t.text])),
     nextQuest: next ? { id: next.id, title: next.title, tagline: next.tagline, npcName: next.npcName, isFollowUp: followUps.length > 0 } : null,
+    aftermath: result.aftermath ?? [],
+    mode: result.mode ?? "first",
+    comparison: result.comparison ?? null,
+    chapter: chapterIndex(quest.id)
+      ? { index: chapterIndex(quest.id)!, total: CAMPAIGN.chapters.length, title: CAMPAIGN.title, finished: campaignProgress(state.world).finished }
+      : null,
   };
+}
+
+function safeCarryOver(quest: NonNullable<ReturnType<typeof findQuest>>, state: PlayerState): string[] {
+  try {
+    return quest.carryOver?.({ world: state.world, competencies: state.competencies, npcs: state.npcs }) ?? [];
+  } catch (err) {
+    console.error("[queries] carryOver threw", err);
+    return [];
+  }
 }
 
 /** Quest ids in display order, for clients that want a flat list. */

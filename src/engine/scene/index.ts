@@ -35,6 +35,7 @@ export const SIGNAL_PATIENCE: Record<PlayerSignal, number> = {
   mentioned_competing_offer: 0,
   asked_about_total_comp: 1,
   deflected: -5,
+  accepted_terms: 2,
   silence_or_filler: -6,
 };
 
@@ -96,6 +97,10 @@ export function reduceNpcTurn<H, S extends Record<string, unknown>>(input: Reduc
   if (!next.ended) {
     if (next.patience <= 0) {
       next.ended = { by: "npc", reason: moves.endReason || "They have run out of patience." };
+      next.stance = "done";
+    } else if (moves.noticed.includes("accepted_terms")) {
+      // The player agreed to what's on the table: the deal is done, whatever the turn count.
+      next.ended = { by: "player", reason: "You agreed terms." };
       next.stance = "done";
     } else if (moves.wantsToEnd && next.turnCount >= input.scene.minTurns) {
       next.ended = { by: "npc", reason: moves.endReason || "They brought the conversation to a close." };

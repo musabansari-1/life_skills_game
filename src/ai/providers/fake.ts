@@ -135,7 +135,11 @@ export class FakeProvider implements LLMProvider {
   }
 
   private evaluation(req: CompletionRequest): string {
-    const transcript = req.messages.map((m) => m.content).join("\n").toLowerCase();
+    const rawTranscript = req.messages.map((m) => m.content).join("\n");
+    const transcript = rawTranscript.toLowerCase();
+    // Quote the player's own words as evidence, like a real evaluator must.
+    const playerLines = [...rawTranscript.matchAll(/^\[\d+\] ([^:]+): (.*)$/gm)].filter((m) => !/^(Emma|Rohan|Priya)$/.test(m[1])).map((m) => m[2]);
+    const quote = (playerLines[0] ?? "").split(/\s+/).slice(0, 10).join(" ") || "(no player lines)";
     const evidence = /(offer from|market|benchmark|data|delivered|led|shipped)/.test(transcript);
     const aggressive = /(demand|or else|final offer|take it or leave)/.test(transcript);
     const bonus = /(bonus|joining|signing|total comp)/.test(transcript);
@@ -151,13 +155,13 @@ export class FakeProvider implements LLMProvider {
       overallScore: 40 + (evidence ? 25 : 0) + (bonus ? 10 : 0) - (aggressive ? 15 : 0) - (minimum ? 10 : 0),
       rubricScores: criterionIds.map((id) => ({ criterionId: id, score: evidence ? 3 : 1, evidence: "(fake) transcript", note: "(fake)" })),
       behaviors: [
-        { skill: "negotiation", facet: "anchoring", score: score(/\d+\s*(l|lakh)/.test(transcript), 0.8, 0.3), evidence: "(fake)", note: "" },
-        { skill: "persuasion", facet: "evidence", score: score(evidence, 0.85, 0.25), evidence: "(fake)", note: "" },
-        { skill: "negotiation", facet: "discovery", score: score(bonus, 0.75, 0.35), evidence: "(fake)" },
-        { skill: "negotiation", facet: "protecting_leverage", score: score(!minimum, 0.7, 0.15), evidence: "(fake)" },
-        { skill: "negotiation", facet: "maintaining_rapport", score: score(!aggressive, 0.75, 0.2), evidence: "(fake)" },
-        { skill: "confidence", facet: "assertiveness", score: 0.65, evidence: "(fake)" },
-        { skill: "communication", facet: "clarity", score: 0.6, evidence: "(fake)" },
+        { skill: "negotiation", facet: "anchoring", score: score(/\d+\s*(l|lakh)/.test(transcript), 0.8, 0.3), evidence: quote, note: "" },
+        { skill: "persuasion", facet: "evidence", score: score(evidence, 0.85, 0.25), evidence: quote, note: "" },
+        { skill: "negotiation", facet: "discovery", score: score(bonus, 0.75, 0.35), evidence: quote },
+        { skill: "negotiation", facet: "protecting_leverage", score: score(!minimum, 0.7, 0.15), evidence: quote },
+        { skill: "negotiation", facet: "maintaining_rapport", score: score(!aggressive, 0.75, 0.2), evidence: quote },
+        { skill: "confidence", facet: "assertiveness", score: 0.65, evidence: quote },
+        { skill: "communication", facet: "clarity", score: 0.6, evidence: quote },
       ],
       strengths: evidence ? [{ title: "Justified the counter with evidence", detail: "You tied the number to concrete results, which gave the recruiter something to defend internally." }] : [],
       improvements: [
@@ -168,7 +172,7 @@ export class FakeProvider implements LLMProvider {
         },
       ],
       keyMoments: [{ turnIndex: 1, label: "Opening counter", impact: evidence ? "positive" : "neutral", detail: "(fake)" }],
-      objectiveResults: objectiveIds.map((id) => ({ objectiveId: id, achieved: evidence, evidence: "(fake)" })),
+      objectiveResults: objectiveIds.map((id) => ({ objectiveId: id, achieved: evidence, evidence: quote })),
     });
   }
 
