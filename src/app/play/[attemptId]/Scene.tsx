@@ -163,8 +163,12 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
     return () => window.removeEventListener("keydown", onKey);
   }, [began, voice, ended, busy]);
 
+  const [captionOverflows, setCaptionOverflows] = useState(false);
   useEffect(() => {
-    captionRef.current?.scrollTo({ top: captionRef.current.scrollHeight });
+    const el = captionRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight });
+    setCaptionOverflows(el.scrollHeight > el.clientHeight + 2);
   }, [caption]);
 
   useEffect(() => {
@@ -285,7 +289,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
           </div>
         </div>
 
-        <p ref={captionRef} className="font-display text-[1.35rem] leading-snug sm:text-2xl text-center max-w-2xl sm:leading-relaxed text-paper min-h-[3.2rem] max-h-[8.5rem] overflow-y-auto scrollbar-thin px-1">
+        <p ref={captionRef} className={`font-display text-[1.35rem] leading-snug sm:text-2xl text-center max-w-2xl sm:leading-relaxed text-paper min-h-[3.2rem] max-h-[10.5rem] sm:max-h-[12.5rem] overflow-y-auto scrollbar-thin px-1 ${captionOverflows ? "[mask-image:linear-gradient(to_bottom,transparent,black_2.5rem)]" : ""}`}>
           {caption || (voice.state === "thinking" ? <span className="text-paper-3">…</span> : "")}
         </p>
 
