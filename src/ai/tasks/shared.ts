@@ -91,15 +91,31 @@ export async function runStructuredTask<S extends z.ZodTypeAny>(
   throw new AIProviderError(`Structured output failed after ${maxAttempts} attempts: ${lastError}`, ctx.provider.name, true);
 }
 
+/**
+ * Transcript for evaluation and memory. Only canonical text: an interrupted NPC
+ * line shows exactly what was heard, marked as cut off, never the unheard rest.
+ */
 export function renderTranscript(turns: DialogueTurn[], playerName: string, npcName: string): string {
   return turns
     .filter((t) => t.speaker !== "system")
-    .map((t) => `[${t.index}] ${t.speaker === "player" ? playerName : npcName}: ${t.text}`)
+    .map((t) => {
+      const who = t.speaker === "player" ? playerName : npcName;
+      const other = t.speaker === "player" ? npcName : playerName;
+      return `[${t.index}] ${who}: ${t.text}${t.interrupted ? `— [${other} cut in here; the rest was never said]` : ""}`;
+    })
     .join("\n");
 }
 
-/** Last N turns as chat messages for the NPC model (player = user, npc = assistant). */
+/**
+ * Last N turns as chat messages for the NPC model (player = user, npc = assistant).
+ * An interrupted NPC line ends with a dash and the player's next line is marked
+ * as cutting in, so the model knows it was interrupted and where.
+ */
 export function recentTurnsAsMessages(turns: DialogueTurn[], window = 14): CompletionRequest["messages"] {
   const recent = turns.filter((t) => t.speaker !== "system").slice(-window);
-  return recent.map((t) => ({ role: t.speaker === "player" ? "user" : "assistant", content: t.text }));
+  return recent.map((t, i) => {
+    if (t.speaker === "npc") return { role: "assistant" as const, content: t.interrupted ? `${t.text || "…"}—` : t.text || "…" };
+    const prev = recent[i - 1];
+    return { role: "user" as const, content: prev?.speaker === "npc" && prev.interrupted ? `(cutting in) ${t.text}` : t.text };
+  });
 }

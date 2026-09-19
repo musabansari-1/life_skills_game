@@ -13,8 +13,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Orb } from "@/components/Orb";
 import { useVoiceSession } from "@/voice/useVoiceSession";
 import { createBrowserVoiceProviders, NullSpeechSynthesizer } from "@/voice/browser";
-import type { VoiceProfile } from "@/voice/types";
-import type { ClientAttempt } from "@/contracts/api";
+import type { NpcLine, VoiceProfile } from "@/voice/types";
+import type { ClientAttempt, DeliveryReport } from "@/contracts/api";
 import { createGameClient, GameApiError } from "@/client/gameClient";
 
 interface SceneProps {
@@ -46,7 +46,7 @@ const CONCLUDE_STEPS: { stage: string; label: (npc: string) => string }[] = [
 export function Scene({ initial, quest, npc, playerName, initialMode, chapter }: SceneProps) {
   const router = useRouter();
   const [attempt, setAttempt] = useState<ClientAttempt>(initial);
-  const [caption, setCaption] = useState<string>(initial.turns.filter((t) => t.speaker === "npc").at(-1)?.text ?? "");
+  const [caption] = useState<string>(initial.turns.filter((t) => t.speaker === "npc").at(-1)?.text ?? "");
   const [began, setBegan] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [text, setText] = useState("");
@@ -67,20 +67,54 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
     turnsRef.current = attempt.turns.filter((t) => !t.id.startsWith("tmp_")).length;
   }, [attempt.turns]);
 
-  /** Apply a new server attempt: flash changed status values and mood shifts. */
-  const applyAttempt = useCallback((next: ClientAttempt) => {
-    setAttempt((prev) => {
-      const prevVals = new Map(prev.visibleStatus.map((s) => [s.label, s.value]));
-      const diffs: Record<string, string> = {};
-      for (const s of next.visibleStatus) {
-        const before = prevVals.get(s.label);
-        if (before !== s.value) diffs[s.label] = before ?? "—";
-      }
-      if (Object.keys(diffs).length) setChanged(diffs);
-      if (prev.mood !== next.mood) setMoodPulse((n) => n + 1);
-      return next;
-    });
+  /**
+   * A server attempt arrives in two parts. The turns are canonical the moment
+   * the server commits them. The visible status, mood and ending wait until
+   * the NPC has actually finished saying the line that caused them, so the
+   * offer chip never announces a figure the player hasn't heard yet (and if
+   * they cut in before it, it never shows at all).
+   */
+  const pendingStatusRef = useRef<ClientAttempt | null>(null);
+  const flashStatus = useCallback((prev: ClientAttempt, next: ClientAttempt) => {
+    const prevVals = new Map(prev.visibleStatus.map((s) => [s.label, s.value]));
+    const diffs: Record<string, string> = {};
+    for (const s of next.visibleStatus) {
+      const before = prevVals.get(s.label);
+      if (before !== s.value) diffs[s.label] = before ?? "—";
+    }
+    if (Object.keys(diffs).length) setChanged(diffs);
+    if (prev.mood !== next.mood) setMoodPulse((n) => n + 1);
   }, []);
+  const applyTurns = useCallback((next: ClientAttempt) => {
+    turnsRef.current = next.turns.length;
+    pendingStatusRef.current = next;
+    setAttempt((prev) => ({ ...next, visibleStatus: prev.visibleStatus, mood: prev.mood, ended: prev.ended, status: prev.status }));
+  }, []);
+  const applyStatus = useCallback(() => {
+    const next = pendingStatusRef.current;
+    if (!next) return;
+    pendingStatusRef.current = null;
+    setAttempt((prev) => {
+      flashStatus(prev, next);
+      return { ...prev, visibleStatus: next.visibleStatus, mood: next.mood, ended: next.ended, status: next.status };
+    });
+  }, [flashStatus]);
+  /** Everything at once (resync after an error or an interruption report). */
+  const applyAttemptNow = useCallback(
+    (next: ClientAttempt) => {
+      pendingStatusRef.current = null;
+      turnsRef.current = next.turns.length;
+      setAttempt((prev) => {
+        flashStatus(prev, next);
+        return next;
+      });
+    },
+    [flashStatus],
+  );
+  const lastNpcLine = (a: ClientAttempt): NpcLine | null => {
+    const t = a.turns.filter((x) => x.speaker === "npc").at(-1);
+    return t ? { npcText: t.text, npcTurnIndex: t.index } : null;
+  };
 
   useEffect(() => {
     if (!Object.keys(changed).length) return;
@@ -89,48 +123,50 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
   }, [changed]);
 
   const sendTurn = useCallback(
-    async (playerText: string, modality: "voice" | "text", onSpeech: (s: string, done: boolean) => void) => {
+    async (playerText: string, modality: "voice" | "text", onSpeech: (s: string, done: boolean) => void, interrupted?: DeliveryReport): Promise<NpcLine | null> => {
       setNetError(null);
       const expectedTurnCount = turnsRef.current;
       setAttempt((a) => ({ ...a, turns: [...a.turns, { id: `tmp_${Date.now()}`, index: a.turns.length, speaker: "player", text: playerText }] }));
-      setCaption("");
       try {
-        const next = await api.streamTurn(
-          attempt.id,
-          { text: playerText, modality, expectedTurnCount },
-          {
-            onSpeech: (t, done) => {
-              setCaption(t);
-              onSpeech(t, done);
-            },
-          },
-        );
-        applyAttempt(next);
-        const last = next.turns.filter((t) => t.speaker === "npc").at(-1);
-        if (last) {
-          setCaption(last.text);
-          onSpeech(last.text, true);
-        }
+        const next = await api.streamTurn(attempt.id, { text: playerText, modality, expectedTurnCount, interrupted }, { onSpeech });
+        applyTurns(next);
+        return lastNpcLine(next);
       } catch (err) {
         setAttempt((a) => ({ ...a, turns: a.turns.filter((t) => !t.id.startsWith("tmp_")) }));
-        if (err instanceof GameApiError && err.code === "conflict") {
-          const fresh = await api.attempt(attempt.id).catch(() => null);
-          if (fresh) {
-            applyAttempt(fresh.attempt);
-            setCaption(fresh.attempt.turns.filter((t) => t.speaker === "npc").at(-1)?.text ?? "");
+        // The server may have finished the turn even though our connection dropped
+        // (or another tab sent it): resync, and if our line is there, carry on with the reply.
+        const fresh = await api.attempt(attempt.id).catch(() => null);
+        if (fresh) {
+          const turns = fresh.attempt.turns;
+          if (turns.length >= expectedTurnCount + 2 && turns[expectedTurnCount]?.text === playerText && turns.at(-1)?.speaker === "npc") {
+            applyTurns(fresh.attempt);
+            const line = lastNpcLine(fresh.attempt);
+            if (line) onSpeech(line.npcText, true);
+            return line;
           }
+          applyAttemptNow(fresh.attempt);
         }
+        if (err instanceof GameApiError && err.code === "conflict") throw new Error("The conversation moved on. Say that again.");
         throw err;
       }
     },
-    [api, attempt.id, applyAttempt],
+    [api, attempt.id, applyTurns, applyAttemptNow],
+  );
+
+  /** The player cut Emma off and said nothing after: the server records what they heard. */
+  const reportDelivery = useCallback(
+    async (report: DeliveryReport) => {
+      const next = await api.reportDelivery(attempt.id, report).catch(() => null);
+      if (next) applyAttemptNow(next);
+    },
+    [api, attempt.id, applyAttemptNow],
   );
 
   const isClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
   const voiceProviders = useMemo(() => (isClient ? createBrowserVoiceProviders() : { recognizer: null, synthesizer: new NullSpeechSynthesizer() }), [isClient]);
   const endedRef = useRef(false);
   const shouldAutoListen = useCallback(() => !endedRef.current, []);
-  const voice = useVoiceSession({ profile: npc.voice, sendTurn, textOnly: initialMode === "text", shouldAutoListen, ...voiceProviders });
+  const voice = useVoiceSession({ profile: npc.voice, sendTurn, reportDelivery, textOnly: initialMode === "text", shouldAutoListen, onLineDelivered: applyStatus, ...voiceProviders });
 
   const ended = !!attempt.ended || attempt.status !== "active";
   useEffect(() => {
@@ -144,9 +180,15 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
 
   const begin = () => {
     setBegan(true);
-    const opening = attempt.turns.find((t) => t.speaker === "npc")?.text;
-    if (opening && !voice.textOnly) void voice.speakLine(opening);
+    const opening = attempt.turns.find((t) => t.speaker === "npc");
+    if (opening && !voice.textOnly) void voice.speakLine(opening.text, opening.index);
   };
+
+  // Before anything is said the last line is shown as text; once the scene runs, the caption
+  // follows what has been heard. While a reply is pending or about to be voiced, never fall back
+  // to an older line.
+  const shownCaption = began && (voice.caption || voice.state !== "idle") ? voice.caption : caption;
+  const awaitingVoice = voice.state === "thinking" || (voice.state === "speaking" && !voice.caption);
 
   // Space bar = talk (when not typing).
   useEffect(() => {
@@ -169,7 +211,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight });
     setCaptionOverflows(el.scrollHeight > el.clientHeight + 2);
-  }, [caption]);
+  }, [shownCaption]);
 
   useEffect(() => {
     if (!concluding) return;
@@ -182,7 +224,8 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
     setConcludeStages([]);
     setConcludeStart(Date.now());
     setNow(Date.now());
-    voice.cancelSpeaking();
+    // If Emma was mid-line, what the player heard is recorded before the transcript is judged.
+    await voice.cancelSpeaking();
     if (voice.state === "listening") voice.stopListening();
     try {
       await api.concludeWithProgress(attempt.id, (stage) => setConcludeStages((s) => (s.includes(stage) ? s : [...s, stage])));
@@ -199,7 +242,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
   }
 
   async function leave() {
-    voice.cancelSpeaking();
+    await voice.cancelSpeaking();
     await api.abandon(attempt.id).catch(() => {});
     router.push("/world");
   }
@@ -224,12 +267,16 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
     : voice.state === "listening"
       ? "Listening… pause when you're done"
       : voice.state === "speaking"
-        ? `${npc.shortName} is speaking. Tap to interrupt`
+        ? voice.bargeInArmed
+          ? `${npc.shortName} is speaking. Just start talking to cut in`
+          : `${npc.shortName} is speaking. Tap to interrupt`
         : voice.state === "thinking"
-          ? `${npc.shortName} is thinking…`
-          : playerTurns === 0
-            ? "Tap and talk"
-            : "Tap to reply";
+          ? ""
+          : voice.state === "error"
+            ? "Tap to try again"
+            : playerTurns === 0
+              ? "Tap and talk"
+              : "Tap to reply";
 
   const mood = MOOD[attempt.mood];
   const elapsed = concluding ? Math.max(0, Math.round((now - concludeStart) / 1000)) : 0;
@@ -290,7 +337,8 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
         </div>
 
         <p ref={captionRef} className={`font-display text-[1.35rem] leading-snug sm:text-2xl text-center max-w-2xl sm:leading-relaxed text-paper min-h-[3.2rem] max-h-[10.5rem] sm:max-h-[12.5rem] overflow-y-auto scrollbar-thin px-1 ${captionOverflows ? "[mask-image:linear-gradient(to_bottom,transparent,black_2.5rem)]" : ""}`}>
-          {caption || (voice.state === "thinking" ? <span className="text-paper-3">…</span> : "")}
+          {shownCaption || (awaitingVoice ? <span className="text-paper-3 thinking-dots" aria-label={`${npc.shortName} is thinking`}><span>·</span><span>·</span><span>·</span></span> : "")}
+          {voice.state === "speaking" && voice.captionLive && shownCaption ? <span className="text-brass-2/70 caret" aria-hidden>|</span> : null}
         </p>
 
         {attempt.visibleStatus.length > 0 && (
@@ -314,9 +362,14 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
       {/* Controls */}
       <footer className="relative z-10 px-4 sm:px-6 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 border-t border-line bg-ink-0/85 backdrop-blur">
         {(voice.error || netError) && (
-          <p role="alert" className="text-center text-sm text-warn mb-2">
-            {netError ?? voice.error}
-          </p>
+          <div role="alert" className="flex flex-col items-center gap-1.5 mb-2">
+            <p className="text-center text-sm text-warn">{netError ?? voice.error}</p>
+            {voice.failedLine && !concluding && (
+              <button type="button" className="btn btn-quiet px-3 py-1 text-xs" onClick={() => void voice.retry()}>
+                Send that again
+              </button>
+            )}
+          </div>
         )}
 
         {ended ? (
@@ -397,6 +450,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
               <li key={t.id} className={`text-sm leading-relaxed ${t.speaker === "player" ? "text-paper-2" : "text-paper"}`}>
                 <span className="eyebrow block mb-0.5">{t.speaker === "player" ? playerName : npc.shortName}</span>
                 {t.text}
+                {t.interrupted && <span className="text-paper-3 italic">{t.text ? "—" : "…"} (you cut in)</span>}
               </li>
             ))}
           </ol>

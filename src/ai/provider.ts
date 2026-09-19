@@ -18,6 +18,11 @@ export interface ChatMessage {
 export interface CompletionRequest {
   /** Stable system prompt. Providers may cache it. */
   system: string;
+  /**
+   * Volatile per-call system text (e.g. the NPC's director notes for this
+   * turn). Appended after `system` so the stable prefix stays cacheable.
+   */
+  systemVolatile?: string;
   messages: ChatMessage[];
   maxTokens: number;
   temperature?: number;

@@ -1,226 +1,106 @@
 "use client";
 /**
- * Turn-taking state machine for a spoken scene.
+ * React adapter over the platform-neutral ConversationController.
  *
- * Platform-neutral: no DOM or browser APIs here. Speech providers are injected
- * (web: src/voice/browser.ts via createBrowserVoiceProviders; React Native:
- * wrappers around expo-speech / a native STT module implementing the same
- * interfaces). The server is reached only through the injected `sendTurn`.
- *
- *   idle ──(hold/tap mic)──▶ listening ──(release/stop)──▶ thinking ──▶ speaking ──▶ idle
- *                                                                        │
- *                               (barge-in: mic pressed while speaking) ◀─┘
- *
- * NPC speech streams in as text; we speak it sentence by sentence so audio
- * starts before generation finishes. Audio providers are injected; the hook
- * never touches the network — the caller supplies `sendTurn`.
+ * All turn-taking, interruption and delivery logic lives in controller.ts so
+ * a React Native client can wrap the same class with native speech providers.
+ * This hook only: creates the controller for the injected providers, keeps the
+ * callers' callbacks fresh via refs, subscribes React to its snapshot, and
+ * pauses the mic when the tab goes to the background.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { takeSpeakableChunks } from "./chunker";
-import type { SpeechRecognizer, SpeechSynthesizer, VoiceProfile, VoiceState } from "./types";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import type { DeliveryReport } from "@/contracts/api";
+import { ConversationController, type ConversationSnapshot } from "./controller";
+import type { ConversationTransport, NpcLine, SpeechRecognizer, SpeechSynthesizer, VoiceProfile, VoiceState } from "./types";
 
 export interface UseVoiceSessionOptions {
   profile: VoiceProfile;
-  /** Sends the player's text; must call `onSpeech` with the growing NPC speech and `done` when finished. */
-  sendTurn: (text: string, modality: "voice" | "text", onSpeech: (speechSoFar: string, done: boolean) => void) => Promise<void>;
+  /**
+   * Sends the player's text; must call `onSpeech` with the growing NPC speech
+   * and `done` when finished, and resolve with the committed NPC line.
+   */
+  sendTurn: (text: string, modality: "voice" | "text", onSpeech: (speechSoFar: string, done: boolean) => void, interrupted?: DeliveryReport) => Promise<NpcLine | null>;
+  /** The player cut a line off and said nothing after it. */
+  reportDelivery: (report: DeliveryReport) => Promise<void>;
   /** Text-only mode: no TTS, no mic. */
   textOnly?: boolean;
   /** Speech-to-text provider (null when unavailable on this platform). */
   recognizer: SpeechRecognizer | null;
   /** Text-to-speech provider. */
   synthesizer: SpeechSynthesizer;
-  /**
-   * Hands-free conversation: after the NPC finishes replying to a spoken turn,
-   * start listening again automatically if this returns true.
-   */
+  /** Hands-free conversation: after the NPC finishes replying to a spoken turn, listen again if this returns true. */
   shouldAutoListen?: () => boolean;
+  /** An NPC line finished playing (or, in text mode, finished showing). */
+  onLineDelivered?: (line: NpcLine) => void;
+  /** Let the player cut in just by talking while the NPC speaks (default true). */
+  voiceBargeIn?: boolean;
 }
 
-export interface VoiceSessionApi {
+export interface VoiceSessionApi extends ConversationSnapshot {
   state: VoiceState;
-  interim: string;
-  error: string | null;
-  micAvailable: boolean;
-  ttsAvailable: boolean;
   startListening: () => void;
   stopListening: () => void;
-  cancelSpeaking: () => void;
+  /** Stops the NPC and resolves once any cut-off has been reported. */
+  cancelSpeaking: () => Promise<void>;
   sendText: (text: string) => Promise<void>;
-  /** Speak an arbitrary NPC line (e.g. the opening) without a player turn. */
-  speakLine: (text: string) => Promise<void>;
+  retry: () => Promise<void>;
+  /** Speak an NPC line that didn't come from a player turn (the opening), by its turn index. */
+  speakLine: (text: string, turnIndex: number) => Promise<void>;
   setTextOnly: (v: boolean) => void;
-  textOnly: boolean;
 }
 
+const unconfigured: ConversationTransport = {
+  sendTurn: async () => {
+    throw new Error("Voice session not ready yet.");
+  },
+  reportDelivery: async () => {},
+};
+
 export function useVoiceSession(opts: UseVoiceSessionOptions): VoiceSessionApi {
-  const [state, setState] = useState<VoiceState>("idle");
-  const [interim, setInterim] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [textOnly, setTextOnly] = useState(!!opts.textOnly);
+  const { profile, recognizer, synthesizer, textOnly, voiceBargeIn, sendTurn, reportDelivery, shouldAutoListen, onLineDelivered } = opts;
 
-  const recognizer = opts.recognizer;
-  const synth = opts.synthesizer;
+  // Providers arrive after hydration on the web; a new provider pair means a new controller.
+  // Profile and textOnly are initial values; everything else is (re)wired below.
+  const controller = useMemo(
+    () => new ConversationController({ profile, recognizer, synthesizer, textOnly, voiceBargeIn, transport: unconfigured }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recognizer, synthesizer],
+  );
+  // Unmount (or a strict-mode remount) stops audio and the mic but keeps the controller usable.
+  useEffect(() => () => controller.stop(), [controller]);
 
-  const stateRef = useRef<VoiceState>("idle");
-  const setS = useCallback((s: VoiceState) => {
-    stateRef.current = s;
-    setState(s);
-  }, []);
-  const textOnlyRef = useRef(textOnly);
-  const sendTurnRef = useRef(opts.sendTurn);
-  const profileRef = useRef(opts.profile);
-  const autoListenRef = useRef(opts.shouldAutoListen);
-  const startListeningRef = useRef<() => void>(() => {});
+  // Keep the controller's callbacks current without recreating it (callers' closures change every render).
   useEffect(() => {
-    textOnlyRef.current = textOnly;
-    sendTurnRef.current = opts.sendTurn;
-    profileRef.current = opts.profile;
-    autoListenRef.current = opts.shouldAutoListen;
-  }, [textOnly, opts.sendTurn, opts.profile, opts.shouldAutoListen]);
-
-  // ---- speaking queue (sentence-chunked)
-  const queueRef = useRef<string[]>([]);
-  const spokenUpToRef = useRef(0);
-  const speakingRef = useRef(false);
-  const generationRef = useRef(0); // increments on cancel so stale chunks are dropped
-
-  const drainQueue = useCallback(
-    async (gen: number) => {
-      if (speakingRef.current) return;
-      speakingRef.current = true;
-      while (queueRef.current.length && gen === generationRef.current) {
-        const chunk = queueRef.current.shift()!;
-        if (stateRef.current !== "speaking") setS("speaking");
-        await synth.speak(chunk, profileRef.current);
-      }
-      speakingRef.current = false;
-    },
-    [synth, setS],
-  );
-
-  const enqueueSpeech = useCallback(
-    (speechSoFar: string, done: boolean, gen: number) => {
-      if (textOnlyRef.current || !synth.available) return;
-      // Only speak complete sentences unless generation is done.
-      const { chunks, consumed } = takeSpeakableChunks(speechSoFar, spokenUpToRef.current, done);
-      queueRef.current.push(...chunks);
-      spokenUpToRef.current = consumed;
-      if (queueRef.current.length) void drainQueue(gen);
-    },
-    [synth, drainQueue],
-  );
-
-  const cancelSpeaking = useCallback(() => {
-    generationRef.current += 1;
-    queueRef.current = [];
-    synth.cancel();
-    speakingRef.current = false;
-    if (stateRef.current === "speaking") setS("idle");
-  }, [synth, setS]);
-
-  const runTurn = useCallback(
-    async (text: string, modality: "voice" | "text") => {
-      cancelSpeaking();
-      const gen = generationRef.current;
-      spokenUpToRef.current = 0;
-      setS("thinking");
-      setError(null);
-      try {
-        await sendTurnRef.current(text, modality, (speechSoFar, done) => {
-          if (gen !== generationRef.current) return;
-          enqueueSpeech(speechSoFar, done, gen);
-        });
-        // Wait for audio to finish.
-        while ((speakingRef.current || queueRef.current.length) && gen === generationRef.current) {
-          await new Promise((r) => setTimeout(r, 80));
-        }
-        if (gen === generationRef.current) {
-          setS("idle");
-          // Hands-free: keep the conversation going if the player is speaking, not typing.
-          if (modality === "voice" && !textOnlyRef.current && autoListenRef.current?.()) {
-            setTimeout(() => {
-              if (stateRef.current === "idle" && gen === generationRef.current) startListeningRef.current();
-            }, 350);
-          }
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Something went wrong.");
-        setS("error");
-      }
-    },
-    [cancelSpeaking, enqueueSpeech, setS],
-  );
-
-  // ---- listening
-  const startListening = useCallback(() => {
-    if (!recognizer?.available) {
-      setError("Voice input isn't available here. Use text instead.");
-      return;
-    }
-    if (stateRef.current === "thinking") return;
-    cancelSpeaking(); // barge-in
-    synth.prime();
-    setInterim("");
-    setError(null);
-    setS("listening");
-    recognizer.start(
-      {
-        onInterim: (t) => setInterim(t),
-        onFinal: (t) => {
-          setInterim("");
-          if (stateRef.current !== "listening") return;
-          if (t.trim()) void runTurn(t.trim(), "voice");
-          else setS("idle");
-        },
-        onError: (msg, fatal) => {
-          setError(msg);
-          if (fatal) setS("error");
-        },
-        onEnd: () => {
-          if (stateRef.current === "listening") setS("idle");
-        },
+    controller.configure({
+      transport: {
+        sendTurn: (input, onSpeech) => sendTurn(input.text, input.modality, onSpeech, input.interrupted),
+        reportDelivery: (report) => reportDelivery(report),
       },
-      { lang: "en-IN" },
-    );
-  }, [recognizer, synth, cancelSpeaking, runTurn, setS]);
+      autoListen: () => shouldAutoListen?.() ?? false,
+      onLineDelivered: (line) => onLineDelivered?.(line),
+      voiceBargeIn,
+    });
+  }, [controller, sendTurn, reportDelivery, shouldAutoListen, onLineDelivered, voiceBargeIn]);
 
+  // Background tab: the mic session dies silently; make the state honest.
   useEffect(() => {
-    startListeningRef.current = startListening;
-  }, [startListening]);
+    if (typeof document === "undefined") return;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") controller.pause();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [controller]);
 
-  const stopListening = useCallback(() => {
-    recognizer?.stop();
-  }, [recognizer]);
+  const snap = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
 
-  const sendText = useCallback((text: string) => runTurn(text, "text"), [runTurn]);
+  const startListening = useCallback(() => controller.startListening(), [controller]);
+  const stopListening = useCallback(() => controller.stopListening(), [controller]);
+  const cancelSpeaking = useCallback(() => controller.cancelSpeaking(), [controller]);
+  const sendText = useCallback((text: string) => controller.sendText(text), [controller]);
+  const retry = useCallback(() => controller.retry(), [controller]);
+  const speakLine = useCallback((text: string, turnIndex: number) => controller.speakLine(text, turnIndex), [controller]);
+  const setTextOnly = useCallback((v: boolean) => controller.setTextOnly(v), [controller]);
 
-  const speakLine = useCallback(
-    async (text: string) => {
-      if (textOnlyRef.current || !synth.available) return;
-      cancelSpeaking();
-      const gen = generationRef.current;
-      spokenUpToRef.current = 0;
-      enqueueSpeech(text, true, gen);
-      while ((speakingRef.current || queueRef.current.length) && gen === generationRef.current) await new Promise((r) => setTimeout(r, 80));
-      if (gen === generationRef.current && stateRef.current === "speaking") setS("idle");
-    },
-    [synth, cancelSpeaking, enqueueSpeech, setS],
-  );
-
-  useEffect(() => () => cancelSpeaking(), [cancelSpeaking]);
-
-  return {
-    state,
-    interim,
-    error,
-    micAvailable: !!recognizer?.available,
-    ttsAvailable: synth.available,
-    startListening,
-    stopListening,
-    cancelSpeaking,
-    sendText,
-    speakLine,
-    setTextOnly,
-    textOnly,
-  };
+  return { ...snap, startListening, stopListening, cancelSpeaking, sendText, retry, speakLine, setTextOnly };
 }

@@ -58,6 +58,11 @@ export class FakeProvider implements LLMProvider {
     }
   }
 
+  /** Stable + volatile system text, for the heuristics below. */
+  private sys(req: CompletionRequest): string {
+    return req.systemVolatile ? `${req.system}\n${req.systemVolatile}` : req.system;
+  }
+
   private lastPlayer(req: CompletionRequest): string {
     for (let i = req.messages.length - 1; i >= 0; i--) if (req.messages[i].role === "user") return req.messages[i].content;
     return "";
@@ -65,7 +70,7 @@ export class FakeProvider implements LLMProvider {
 
   private opening(req: CompletionRequest): string {
     // Quest-aware canned openers so UI walkthroughs on the fake provider read sensibly.
-    const s = req.system;
+    const s = this.sys(req);
     const speech = /first screening call/.test(s)
       ? "Hi, I'm Emma from Nova Labs. Thanks for making time. Tell me a bit about yourself and what you've been working on."
       : /Interviewing .* for the Platform Engineer role/.test(s)
@@ -112,8 +117,8 @@ export class FakeProvider implements LLMProvider {
     if (!text.trim()) noticed.push("silence_or_filler");
 
     // Parse current offer from the system prompt's director/status lines if present.
-    const curMatch = req.system.match(/CURRENT_BASE=(\d+)/);
-    const maxMatch = req.system.match(/MAX_BASE=(\d+)/);
+    const curMatch = this.sys(req).match(/CURRENT_BASE=(\d+)/);
+    const maxMatch = this.sys(req).match(/MAX_BASE=(\d+)/);
     const current = curMatch ? parseInt(curMatch[1], 10) : 850000;
     const max = maxMatch ? parseInt(maxMatch[1], 10) : 970000;
 

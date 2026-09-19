@@ -42,7 +42,8 @@ export class AnthropicProvider implements LLMProvider {
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: this.modelFor(req.task),
       max_tokens: req.maxTokens,
-      system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
+      // Stable prefix is cached across turns; volatile director notes ride in a second block so they don't bust the cache.
+      system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }, ...(req.systemVolatile ? [{ type: "text" as const, text: req.systemVolatile }] : [])],
       messages,
       output_config: { effort: req.effort ?? "medium" },
     };

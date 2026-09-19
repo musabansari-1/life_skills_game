@@ -222,7 +222,10 @@ export const ClientTurnSchema = z.object({
   id: z.string(),
   index: z.number().int(),
   speaker: z.enum(["player", "npc", "system"]),
+  /** Canonical text: for an interrupted NPC line, only what the player heard. */
   text: z.string(),
+  /** True when the player cut this NPC line off (additive, v1). */
+  interrupted: z.boolean().optional(),
 });
 export type ClientTurn = z.infer<typeof ClientTurnSchema>;
 
@@ -279,6 +282,18 @@ export const StartQuestRequestSchema = z.object({
   modality: z.enum(["voice", "text"]).default("text"),
 });
 
+/**
+ * What the player actually heard of an NPC line before cutting it off. Clients
+ * report the delivered prefix (from their audio playback); the server keeps
+ * only that as canon and re-derives the scene from it. `heardText` is matched
+ * to the generated line on whole words, so a slightly-off report is safe.
+ */
+export const DeliveryReportSchema = z.object({
+  turnIndex: z.number().int().min(0),
+  heardText: z.string().max(4000),
+});
+export type DeliveryReport = z.infer<typeof DeliveryReportSchema>;
+
 export const TurnRequestSchema = z.object({
   text: z.string().trim().min(1, "Say something first.").max(2000),
   modality: z.enum(["voice", "text"]).default("text"),
@@ -288,8 +303,14 @@ export const TurnRequestSchema = z.object({
    * the current attempt instead of appending a duplicate turn.
    */
   expectedTurnCount: z.number().int().min(0).optional(),
+  /** Present when this line interrupted the NPC's last line (additive, v1). Applied before the line is added. */
+  interrupted: DeliveryReportSchema.optional(),
 });
 export type TurnRequest = z.infer<typeof TurnRequestSchema>;
+
+/** POST /attempts/:id/delivery — report an interruption that was not followed by a player line. */
+export const DeliveryResponseSchema = z.object({ attempt: ClientAttemptSchema });
+export type DeliveryResponse = z.infer<typeof DeliveryResponseSchema>;
 
 /** Non-streaming turn response (Accept: application/json). */
 export const TurnResponseSchema = z.object({

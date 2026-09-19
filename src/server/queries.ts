@@ -38,7 +38,7 @@ export function toClientAttempt(a: AttemptView): ClientAttempt {
     questId: a.questId,
     npcId: a.npcId,
     status: a.status,
-    turns: a.turns.map((t) => ({ id: t.id, index: t.index, speaker: t.speaker, text: t.text })),
+    turns: a.turns.map((t) => ({ id: t.id, index: t.index, speaker: t.speaker, text: t.text, ...(t.interrupted ? { interrupted: true } : {}) })),
     visibleStatus: a.visibleStatus,
     mood: a.scene.stance,
     ended: a.scene.ended,

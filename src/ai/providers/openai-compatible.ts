@@ -32,7 +32,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       max_tokens: req.maxTokens,
       temperature: req.temperature ?? 0.7,
       stream,
-      messages: [{ role: "system", content: req.system }, ...req.messages.map((m) => ({ role: m.role, content: m.content }))],
+      messages: [{ role: "system", content: req.systemVolatile ? `${req.system}\n\n${req.systemVolatile}` : req.system }, ...req.messages.map((m) => ({ role: m.role, content: m.content }))],
     };
     if (req.stop?.length) body.stop = req.stop;
     if (req.jsonMode) body.response_format = { type: "json_object" };

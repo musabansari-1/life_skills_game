@@ -1,13 +1,19 @@
 /**
  * AI task: NPC turn generation (streaming).
  *
- * Prompt contract (system):
- *   identity + personality → relationship (prose) → memory (structured block)
- *   → situation & hidden briefing → director notes (deterministic, per turn)
- *   → signal vocabulary → output format.
- * Messages: recent turns only (windowed). Long-term history comes from memory.
+ * Prompt contract:
+ *   system (stable per attempt, cacheable):
+ *     identity + personality → relationship (prose) → memory (structured block)
+ *     → situation → revealable/proposal vocabulary → how to talk / behave → output format
+ *   systemVolatile (per turn):
+ *     hidden briefing (current values) → what's already revealed → director notes
+ *     (deterministic: patience, stance, difficulty, time) → rules-derived direction
+ *     for THIS turn (binding)
+ *   messages: recent turns only (windowed). Long-term history comes from memory.
  *
  * The NPC never grades the player. It perceives (signals) and proposes (moves).
+ * What it may say is bounded by the rules (turn direction) and enforced by the
+ * speech gate in the orchestrator; the prompt is guidance, the gate is the guarantee.
  */
 import { PLAYER_SIGNALS, type DialogueTurn, type NPCMoves } from "@/engine/types/scene";
 import type { NPCDefinition, NPCInstanceState } from "@/engine/types/npc";
@@ -57,14 +63,14 @@ export interface NpcTurnInput {
   turnDirection?: string[];
 }
 
+/** Stable across an attempt: everything that doesn't change turn to turn. Cacheable by providers. */
 export function buildNpcSystemPrompt(input: NpcTurnInput): string {
   const { quest, npcDef, npcState, sceneCtx, playerName } = input;
   const p = npcDef.personality;
   const relationship = describeRelationship(npcState.relationship, playerName);
   const memory = renderMemoryBlock(quest.memoryFocus ? quest.memoryFocus(npcState.memory) : npcState.memory, playerName);
-  const director = [...genericDirectorNotes(sceneCtx.scene, quest.scene.minTurns, quest.scene.maxTurns), ...quest.scene.director(sceneCtx)];
   const revealable = Object.entries(quest.scene.revealableKeys)
-    .map(([k, v]) => `- ${k}: ${v}${sceneCtx.scene.revealed.includes(k) ? " (ALREADY REVEALED — don't list again)" : ""}`)
+    .map(([k, v]) => `- ${k}: ${v}`)
     .join("\n");
   const proposals = quest.scene.proposalKeys
     ? Object.entries(quest.scene.proposalKeys)
@@ -93,27 +99,28 @@ ${memory}
 # The situation right now
 ${quest.scene.npcSituation(sceneCtx)}
 
-# What you know that ${playerName} does not (hidden — never dump this; reveal only as the briefing allows)
-${quest.scene.hiddenBriefing(sceneCtx)}
-
-Information you may choose to reveal, and when:
+Information you may choose to reveal, and when (the hidden briefing each turn has the current values):
 ${revealable}
 
-# Direction for this turn (from the scene state — follow it)
-${director.map((d) => `- ${d}`).join("\n")}
-
-${input.turnDirection?.length ? `# What the game rules say about ${playerName}'s last line (binding: obey exactly)\n${input.turnDirection.map((d) => `- ${d}`).join("\n")}\n\n` : ""}# How you talk
-- This is a live spoken call. Usually one or two sentences, never more than three. Aim for under 35 words. Short turns, like a real person.
-- ${input.opening ? "Open naturally in two or three sentences. If you have history with them, let it show in one small, natural reference, not a recap." : "Respond to what they just said, not to what a helpful assistant would say."}
+# How you talk
+- This is a live spoken call, not a chat window. One or two sentences is normal; three is the ceiling. Aim for eight to thirty words. If you have a lot to say, say the most important part and stop; they can ask.
+- Respond to the thing they actually said. Don't restate it back to them, don't summarise the conversation, don't narrate what you're doing, and don't explain how you're thinking about it.
 - No lists, stage directions, emojis or markdown. Say numbers the way a person says them ("nine point two lakh", "forty thousand").
-- At most one question per turn, and plenty of turns need none.
+- At most one question per turn, and many turns need none.
+- Never repeat a line you've already said in this conversation, or re-introduce the situation. If they just say "hi" or "okay", answer in a few words and let them lead; if you need something from them, ask for it in a new way, shorter.
+- Never use assistant phrasing. Banned: "Great question", "That's a great point", "I appreciate your honesty", "I understand your concern", "Absolutely", "Certainly", "I hear you", "Let me explain", "To be transparent". A real ${npcDef.role.toLowerCase()} doesn't talk like that.
+- Their words arrive through speech recognition: fragments, filler ("um", "so, yeah"), false starts and mis-heard words are normal. Read the intent, not the grammar. If they correct themselves ("no wait", "I mean", "scratch that", "actually"), go with the correction and drop the earlier version without comment. If a line is genuinely unclear, ask one short, specific question rather than guessing.
+- If they trail off or give you half a thought, react the way a busy person does: a short prompt ("Go on." / "Around what?"), not a speech.
+- If they cut you off mid-sentence, respond to what they said, like someone who was interrupted. Don't repeat the rest of your sentence unless they ask for it.
 
 # How you behave
 - You are ${npcDef.shortName}, with your own goals. You are not ${playerName}'s coach or friend. Never advise them how to negotiate, what to ask for, or whether they're "sure". If they say yes, take the yes and close.
-- Say no plainly when the answer is no. You don't have to justify every refusal. Hold your position under pressure; give ground only when they give you a real reason.
-- Push back on vague claims. If something contradicts what they said earlier (today or in what you remember), call it out briefly.
+- "Yes, if…" is not a yes. Treat a conditional acceptance as a new ask about the condition, and answer the condition.
+- Say no plainly when the answer is no. You don't owe a justification for every refusal. Hold your position under pressure; give ground only when they give you a real reason.
+- Push back on vague claims. If something contradicts what they said earlier (today, or in what you remember), name it briefly and ask which is true.
+- Notice hesitation and hedging. Someone who won't name a number, or dodges a direct question, gets asked again, more directly.
 - Hidden information stays hidden unless they earn it with a good question, real evidence or genuine rapport.
-- Decide on this call. Never say you'll check and come back: you have the authority the briefing gives you. When you move, say the exact figure out loud and put the same figure in "proposal". Never say a figure the rules above don't allow.
+- Decide on this call. Never say you'll check and come back: you have the authority the briefing gives you. When you move, say the exact figure out loud and put the same figure in "proposal". Never say a figure the turn direction doesn't allow.
 
 # Output format (strict)
 First the speech, then the moves. Exactly this shape:
@@ -131,6 +138,26 @@ ${proposals}
 "wantsToEnd": true only if you are genuinely wrapping up (deal done, or you've had enough).`;
 }
 
+/** Per-turn system text: current hidden values, what's revealed, and the deterministic direction for this turn. */
+export function buildNpcVolatilePrompt(input: NpcTurnInput): string {
+  const { quest, sceneCtx, playerName } = input;
+  const director = [...genericDirectorNotes(sceneCtx.scene, quest.scene.minTurns, quest.scene.maxTurns, sceneCtx.difficulty), ...quest.scene.director(sceneCtx)];
+  const revealed = sceneCtx.scene.revealed.length ? sceneCtx.scene.revealed.join(", ") : "(nothing yet)";
+  const opening = input.opening
+    ? "- Open naturally in two or three sentences. If you have history with them, let it show in one small, natural reference, not a recap."
+    : "- Respond to what they just said, not to what a helpful assistant would say.";
+  return `# What you know that ${playerName} does not (hidden — never dump this; reveal only as the briefing allows)
+${quest.scene.hiddenBriefing(sceneCtx)}
+
+Already revealed (don't list again): ${revealed}
+
+# Direction for this turn (from the scene state — follow it)
+${director.map((d) => `- ${d}`).join("\n")}
+${opening}
+${input.turnDirection?.length ? `\n# What the game rules say about ${playerName}'s last line (binding: obey exactly)\n${input.turnDirection.map((d) => `- ${d}`).join("\n")}\n` : ""}
+Reply now, spoken and short (one to three sentences, under thirty words), in exactly the ${SPEECH_OPEN}…${SPEECH_CLOSE}${MOVES_OPEN}{…}${MOVES_CLOSE} format.`;
+}
+
 export interface NpcTurnOutput {
   speech: string;
   moves: NPCMoves;
@@ -141,6 +168,7 @@ export interface NpcTurnOutput {
 /**
  * Generate the NPC's next line. `onSpeechDelta` receives *speech-only* text as
  * it streams (moves JSON is never surfaced), suitable for captions and TTS.
+ * The final call always carries the definitive speech with `done: true`.
  */
 export async function generateNpcTurn(
   ctx: TaskContext,
@@ -148,6 +176,7 @@ export async function generateNpcTurn(
   onSpeechDelta?: (speechSoFar: string, done: boolean) => void,
 ): Promise<NpcTurnOutput> {
   const system = buildNpcSystemPrompt(input);
+  const systemVolatile = buildNpcVolatilePrompt(input);
   const messages = recentTurnsAsMessages(input.turns);
   if (input.opening) {
     const hint = input.quest.scene.opening.generatedHint ?? "Open the conversation naturally.";
@@ -163,7 +192,7 @@ export async function generateNpcTurn(
     input.opening ? "npc_opening" : "npc_turn",
     () =>
       ctx.provider.stream(
-        { task: input.opening ? "npc_opening" : "npc_turn", system, messages, maxTokens: 1200, temperature: 0.8, effort: "low" },
+        { task: input.opening ? "npc_opening" : "npc_turn", system, systemVolatile, messages, maxTokens: 1200, temperature: 0.8, effort: "low" },
         (delta) => {
           raw += delta;
           if (speechDone || !onSpeechDelta) return;
@@ -192,7 +221,8 @@ export async function generateNpcTurn(
         ctx.provider.complete({
           task: input.opening ? "npc_opening" : "npc_turn",
           system,
-          messages: [...messages, { role: "user", content: "(Reply now as the character, in 1-3 spoken sentences, using exactly the <speech>…</speech><moves>{…}</moves> format. No thinking out loud.)" }],
+          systemVolatile,
+          messages: [...messages, { role: "user", content: "(Reply now as the character, in one to three spoken sentences, using exactly the <speech>…</speech><moves>{…}</moves> format. No thinking out loud.)" }],
           maxTokens: 900,
           temperature: 0.7,
           effort: "low",
@@ -210,7 +240,9 @@ export async function generateNpcTurn(
     }
   }
 
-  if (onSpeechDelta && !speechDone) onSpeechDelta(parsed.speech, true);
+  // The definitive speech always reaches the listener once with done=true, even if
+  // the stream already closed the speech tag (a retry may have replaced it).
+  if (onSpeechDelta && (!speechDone || parsed.speech !== lastEmitted)) onSpeechDelta(parsed.speech, true);
   return { speech: parsed.speech, moves: parsed.moves, raw, problems };
 }
 

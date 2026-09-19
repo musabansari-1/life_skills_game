@@ -29,7 +29,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/v1/attempts/[id
     return errorResponse(err);
   }
   const { id } = await ctx.params;
-  const opts = { expectedTurnCount: body.expectedTurnCount };
+  const opts = { expectedTurnCount: body.expectedTurnCount, interrupted: body.interrupted };
   const wantsStream = (req.headers.get("accept") ?? "").includes("text/event-stream");
 
   if (!wantsStream) {
@@ -43,17 +43,39 @@ export async function POST(req: Request, ctx: RouteContext<"/api/v1/attempts/[id
   }
 
   const encoder = new TextEncoder();
+  // If the client disconnects mid-reply (flaky network, backgrounded tab), the
+  // turn still completes and persists server-side; the client resyncs with
+  // GET /attempts/:id. A closed stream must never abort generation, which would
+  // roll the player's line back as if the model had failed.
+  let closed = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+        }
+      };
       try {
         const { attempt } = await deps.game.submitPlayerTurn(deps.player.playerId, id, body.text, body.modality, (speechSoFar, done) => send("speech", { text: speechSoFar, done }), opts);
         send("result", toClientAttempt(attempt));
       } catch (err) {
         send("error", toApiError(err));
       } finally {
-        controller.close();
+        if (!closed) {
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            /* already closed by the client */
+          }
+        }
       }
+    },
+    cancel() {
+      closed = true;
     },
   });
   return new Response(stream, {

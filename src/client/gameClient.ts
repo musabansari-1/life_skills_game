@@ -29,6 +29,7 @@ import {
   AuthSessionSchema,
   ClientAttemptSchema,
   DebriefSchema,
+  DeliveryResponseSchema,
   DossierSchema,
   PlayerIdentitySchema,
   QuestBriefingSchema,
@@ -38,6 +39,7 @@ import {
   type ApiErrorCode,
   type ClientAttempt,
   type Credentials,
+  type DeliveryReport,
   type TurnRequest,
 } from "@/contracts/api";
 import { SSEParser } from "./sse";
@@ -156,6 +158,13 @@ export function createGameClient(opts: GameClientOptions) {
 
     /** Non-streaming turn: one round trip, returns the whole reply. Works with any fetch. */
     sendTurn: (attemptId: string, turn: TurnRequest) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/turn`, TurnResponseSchema, turn),
+
+    /**
+     * The player cut the NPC's last line off and said nothing after. Records
+     * only the heard prefix as canon. When the player DOES follow with a line,
+     * pass the report as `interrupted` on the turn instead. Idempotent.
+     */
+    reportDelivery: async (attemptId: string, report: DeliveryReport) => (await request("POST", `/attempts/${encodeURIComponent(attemptId)}/delivery`, DeliveryResponseSchema, report)).attempt,
 
     /**
      * Streaming turn over SSE. With a fetch whose Response.body is a

@@ -27,7 +27,8 @@ src/
     relationships  Trust/respect/warmth/familiarity math + prose rendering
     memory     Merge extracted memory into persistent NPC memory; select for prompts
     world      Apply consequences to WorldState; prerequisites
-    scene      Per-turn reducer: signals → patience/stance; reveals; quest proposals; endings
+    scene      Per-turn reducer: signals → patience/stance; reveals; quest proposals; endings;
+               speechGate (rules-before-speech enforcement), delivery (re-derive after interruption), difficulty
     quests     Objective + outcome resolution
     parsing    Spoken-number parsing for speech inference
   ai/          Probabilistic layer. Provider contract + tasks with strict output contracts.
@@ -35,6 +36,7 @@ src/
     providers/      anthropic, openai-compatible (OpenRouter), fake
     tasks/          npcTurn, perceive, evaluate, extractMemory (+ shared retry/log)
     format.ts       NPC wire format parser (<speech> + <moves>)
+                    (NPC prompt = cacheable stable `system` + per-turn `systemVolatile`)
     json.ts         JSON extraction/repair + zod validation
     logger.ts       AI call logging sinks
   content/     Worlds, locations, NPCs, quests. Typed TS config, versioned in code.
@@ -140,9 +142,11 @@ Visible skills (8) each have facets (e.g. negotiation: anchoring, discovery, han
 
 Tables: `users`, `sessions`, `players` (competencies JSON), `world_states` (JSON), `npc_states` (relationship + memory JSON per player×NPC), `quest_attempts` (hidden, scene, evaluation, result JSON), `dialogue_turns`, `events`, `ai_calls`. Structured documents are validated with zod on load. Migrations live in `drizzle/` and are applied on first DB use.
 
-## Voice
+## Voice and the canonical transcript
 
-`voice/types.ts` defines `SpeechRecognizer`, `SpeechSynthesizer`. `voice/browser.ts` implements them with the Web Speech API. `useVoiceSession` is the turn-taking state machine (idle → listening → thinking → speaking), with barge-in (mic press cancels TTS) and sentence-chunked TTS fed by the SSE stream. The server knows nothing about audio: it receives text and streams text.
+`voice/types.ts` defines `SpeechRecognizer`, `SpeechSynthesizer` and `ConversationTransport`; `voice/browser.ts` implements the first two with the Web Speech API. `voice/controller.ts` (`ConversationController`) is the platform-neutral turn-taking state machine: sentence-queued TTS, barge-in by tap or voice (echo-filtered, debounced), adaptive endpointing, ordered sends, retry, and a `DeliveryTracker` that knows how much of each NPC line was actually heard. `useVoiceSession` wraps it for React. The server knows nothing about audio: it receives text, streams text, and receives a text report of what was heard.
+
+Four texts are kept distinct: **generated** (model output), **gated** (after the quest's `speechGate`; the only text ever streamed), **delivered** (what played before any interruption), and **canonical** (`dialogue_turns.text`). Canonical = gated when a line plays out; = the heard prefix when the player cuts in, in which case the scene is re-reduced from the pre-turn state (`dialogue_turns.scene_before`) on just the heard words (`engine/scene/delivery.ts`). Evaluation, memory extraction and the NPC's own context only ever see canonical text. Full design: `REALTIME-CONVERSATION-REVIEW.md`.
 
 ## Security notes
 

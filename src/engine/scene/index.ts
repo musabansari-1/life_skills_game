@@ -14,6 +14,7 @@
 import type { NPCMoves, PlayerSignal, SceneState, Stance } from "../types/scene";
 import type { QuestScene, SceneContext } from "../types/quest";
 import { clamp, round } from "../util";
+import { difficultyProfile } from "./difficulty";
 
 /** How each signal moves patience. Positive = NPC is more willing to keep engaging. */
 export const SIGNAL_PATIENCE: Record<PlayerSignal, number> = {
@@ -40,6 +41,10 @@ export const SIGNAL_PATIENCE: Record<PlayerSignal, number> = {
 };
 
 const HOSTILE: PlayerSignal[] = ["aggressive_tone", "ultimatum", "contradiction"];
+/** Below this patience an NPC who wants to end the conversation walks out, whatever the turn count. */
+export const WALKOUT_PATIENCE = 25;
+/** Weak-line signals whose patience cost scales with difficulty. */
+const WEAK: PlayerSignal[] = ["vague_claim", "rambling", "deflected", "silence_or_filler", "contradiction"];
 const WARM: PlayerSignal[] = ["rapport", "empathy", "acknowledged_npc", "owned_mistake"];
 
 export interface ReduceInput<H, S> {
@@ -60,10 +65,13 @@ export function reduceNpcTurn<H, S extends Record<string, unknown>>(input: Reduc
   const prev = ctx.scene;
   const next: SceneState & { custom: S } = structuredClone(prev);
 
-  // 1. Patience: signal-driven plus a clamped model suggestion.
+  // 1. Patience: signal-driven plus a clamped model suggestion. Harder
+  //    characters forgive weak or empty lines less (difficulty as behaviour).
+  const profile = difficultyProfile(ctx.difficulty);
   let delta = 0;
   for (const s of moves.noticed) {
-    delta += SIGNAL_PATIENCE[s] ?? 0;
+    const base = SIGNAL_PATIENCE[s] ?? 0;
+    delta += base < 0 && WEAK.includes(s) ? base * profile.weakTurnCost : base;
     next.signalCounts[s] = (next.signalCounts[s] ?? 0) + 1;
   }
   delta += clamp(moves.patienceDelta ?? 0, -25, 10) * 0.5; // model suggestion counts half
@@ -101,6 +109,12 @@ export function reduceNpcTurn<H, S extends Record<string, unknown>>(input: Reduc
     } else if (moves.noticed.includes("accepted_terms")) {
       // The player agreed to what's on the table: the deal is done, whatever the turn count.
       next.ended = { by: "player", reason: "You agreed terms." };
+      next.stance = "done";
+    } else if (moves.wantsToEnd && next.patience < WALKOUT_PATIENCE) {
+      // Out of patience and saying so: a character can walk out before the scene's
+      // minimum length. Walking out spends the rest of their patience.
+      next.ended = { by: "npc", reason: moves.endReason || "They ran out of patience and ended the call." };
+      next.patience = 0;
       next.stance = "done";
     } else if (moves.wantsToEnd && next.turnCount >= input.scene.minTurns) {
       next.ended = { by: "npc", reason: moves.endReason || "They brought the conversation to a close." };
@@ -146,9 +160,9 @@ export function abandonScene(scene: SceneState): SceneState {
   return { ...scene, ended: { by: "abandoned", reason: "You left the conversation." }, stance: "done" };
 }
 
-/** Generic director notes derived from scene state; quests add their own. */
-export function genericDirectorNotes(scene: SceneState, minTurns: number, maxTurns: number): string[] {
-  const notes: string[] = [];
+/** Generic director notes derived from scene state and difficulty; quests add their own. */
+export function genericDirectorNotes(scene: SceneState, minTurns: number, maxTurns: number, difficulty?: number): string[] {
+  const notes: string[] = [...difficultyProfile(difficulty).notes];
   const p = scene.patience;
   if (p >= 75) notes.push("You are in a good mood and have time. Be generous with attention, but stay in character.");
   else if (p >= 50) notes.push("You are engaged but busy. Keep answers focused.");

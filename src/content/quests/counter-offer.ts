@@ -14,7 +14,10 @@ import { defineQuest } from "@/engine/types/quest";
 import type { PlayerSignal, SceneState } from "@/engine/types/scene";
 import type { WorldState } from "@/engine/types/world";
 import { formatINR } from "@/engine/util";
-import { extractRupeeAmounts, normalizeMoneyText } from "@/engine/parsing/numbers";
+import { extractRupeeAmounts, formatAmountLike, normalizeMoneyText, type RupeeAmount } from "@/engine/parsing/numbers";
+import { correctedPortion } from "@/engine/parsing/player";
+import { difficultyProfile } from "@/engine/scene/difficulty";
+import type { SceneContext, SpeechCheck } from "@/engine/types/quest";
 
 export interface CounterOfferHidden extends Record<string, unknown> {
   originalBase: number;
@@ -60,7 +63,7 @@ const HIDDEN_KEYS = {
 const round5k = (n: number) => Math.round(n / 5000) * 5000;
 
 /** How much of the remaining headroom the player can unlock this turn. 0..1 */
-function concessionBudget(signals: Set<PlayerSignal>, c: CounterOfferScene, hidden: CounterOfferHidden, scene: SceneState): number {
+function concessionBudget(signals: Set<PlayerSignal>, c: CounterOfferScene, hidden: CounterOfferHidden, scene: SceneState, difficulty?: number): number {
   const hostile = (scene.signalCounts.aggressive_tone ?? 0) + (scene.signalCounts.ultimatum ?? 0);
   let budget = 0.12;
   if (signals.has("evidence_provided")) budget += 0.4;
@@ -76,7 +79,137 @@ function concessionBudget(signals: Set<PlayerSignal>, c: CounterOfferScene, hidd
   // The player anchored themselves in screening: Emma has a reason to hold.
   if (hidden.statedExpectation !== null && hidden.statedExpectation <= c.currentBase) budget -= 0.15;
   if (hidden.urgency === "high") budget += 0.05;
+  // Difficulty as behaviour: a hard Emma unlocks less per good turn, an easy one more.
+  budget *= difficultyProfile(difficulty).concessionScale;
   return Math.max(0, Math.min(1, budget));
+}
+
+/**
+ * What Emma's words commit her to. ONE reader shared by the speech gate (before
+ * she speaks) and speech inference (after), so the two can never disagree:
+ * anything the recorder would treat as a move is exactly what the gate checks.
+ */
+interface OfferSpeechRead {
+  reveal: string[];
+  /** A base figure her words commit to, with the matched text for in-place rewriting. */
+  base: RupeeAmount | null;
+  /** A joining-bonus figure her words commit to. */
+  bonus: RupeeAmount | null;
+  /** Every salary-scale figure she named, committed or not. */
+  salaryFigures: RupeeAmount[];
+}
+
+/** An offer verb immediately before a figure ("I can do", "let's say", "I'll put you at"). */
+const COMMIT_BEFORE_RE =
+  /(i can (?:do|take (?:it|base|you) (?:up )?to|go (?:up )?to|get you to|offer|stretch to|move to|bring (?:it|base) (?:up )?to|make (?:it|that))|we can (?:do|go (?:up )?to|land at|offer|move to|make (?:it|that))|(?:take|bring|move) (?:the )?base (?:up )?to|land at|meet you at|i'll go to|i could (?:do|go to|stretch to)|offer(?:ing)? you|how about|let'?s (?:say|do|call it)|you'?ve got|i'?ll (?:put|get) (?:it|that|you) (?:at|to)|(?:call|make) it|updated? (?:it |the offer )?to|revised? (?:it |the offer )?to|lock(?:ing)? in)\s*$/;
+const NEGATED_RE = /\b(can'?t|cannot|won'?t|not|no way|isn'?t|never|unable|couldn'?t|wouldn'?t|don'?t|doesn'?t)\b/;
+/** Framing that talks ABOUT a figure without offering it ("ten is above where I can go", "a big jump"). */
+const NOT_AN_OFFER_RE = /\b(above|beyond|past|more than|higher than|over what|too (high|much|far)|(a )?(big|healthy|huge|real|large) (jump|step|stretch)|step up|out of (reach|range)|off the table|feels high|is high|a lot)\b/;
+/** The figure belongs to the player ("you asked for ten", "your number", "what you told me"). */
+const ATTRIBUTED_RE = /\b(you|you'?re|you'?ve|your)\b.{0,30}\b(asked|ask|asking|said|say|mentioned|want|wanted|told|hoping|looking for|had in mind|named|number|figure|expect|expected)\b|\basked for\b|\byour (ask|number|figure|floor|minimum)\b/;
+const FIGURE_WORKS_RE = /\b(works|is fine|is doable|we can do that|i can make that (happen|work)|is where (?:i|we) can land|(?:i|we) can land (?:there|on that)|done|agreed|you'?ve got it|it is|it'?s a deal|you have it|sounds good|let'?s go with|deal)\b/;
+
+/** Salary figures a sentence states as fact, not negated, questioned or attributed to the player. */
+function confirmedFigures(sentence: string): RupeeAmount[] {
+  const withCommas = sentence.toLowerCase().replace(/₹/g, " rs ");
+  return extractRupeeAmounts(sentence, { salaryContext: true })
+    .filter((a) => a.raw && (a.unit === "lakh" || a.amount >= 500000))
+    .filter((a) => {
+      const { clause, question } = clauseAt(withCommas, toCommaIndex(withCommas, a.index));
+      return !question && !ATTRIBUTED_RE.test(clause) && !NEGATED_RE.test(clause) && !NOT_AN_OFFER_RE.test(clause);
+    });
+}
+
+/** Map an index in comma-free normalised text back to the same character in text that still has its commas. */
+function toCommaIndex(withCommas: string, normIndex: number): number {
+  let seen = 0;
+  for (let i = 0; i < withCommas.length; i++) {
+    if (withCommas[i] === ",") continue;
+    if (seen === normIndex) return i;
+    seen++;
+  }
+  return withCommas.length;
+}
+
+/** The clause around a character index, and whether its sentence is a question. */
+function clauseAt(text: string, index: number): { clause: string; question: boolean } {
+  const SEP = /[,;:—–!?.]|\s-\s|\b(?:but|though|however|although)\b/g;
+  let start = 0;
+  let end = text.length;
+  for (const m of text.matchAll(SEP)) {
+    const i = m.index ?? 0;
+    if (i + m[0].length <= index) start = i + m[0].length;
+    else if (i > index) {
+      // A decimal point inside a figure ("9.2") is not a boundary.
+      if (m[0] === "." && /\d/.test(text[i - 1] ?? "") && /\d/.test(text[i + 1] ?? "")) continue;
+      end = i;
+      break;
+    }
+  }
+  const terminal = text.slice(index).match(/[.!?]/);
+  return { clause: text.slice(start, end), question: terminal?.[0] === "?" };
+}
+
+function readOfferSpeech(speech: string, { hidden, scene }: SceneContext<CounterOfferHidden, CounterOfferScene>): OfferSpeechRead {
+  const s = speech.toLowerCase();
+  const reveal: string[] = [];
+  const mentionsBonus = /(joining|sign[- ]?on|signing)\s*bonus|one[- ]time\s+(bonus|payment)|sign[- ]?on\b/.test(s);
+  const mentionsCap = /(capped|cap on|ceiling|fixed band|band is fixed|top of the band|can't (go|stretch|move) (any )?(higher|further|past)|no way around it|as high as (i|we) can)/.test(s);
+  const flexible = /(flexib|room|wiggle|some movement|could look at|can (do|offer|put together|sweeten|add)|there is some|might be able|i'?ll add|add a)/.test(s);
+  if (mentionsCap) reveal.push("base_capped");
+  if (mentionsBonus && flexible) reveal.push("bonus_flexible");
+  if (/(urgent|urgency|short-?staffed|need someone (fast|quickly|soon)|stretched|under-?staffed|running lean)/.test(s)) reveal.push("urgency_high");
+  if (/(another candidate|other candidate|second candidate|someone else in the (process|pipeline|final))/.test(s)) reveal.push("competing_candidate");
+  if (/(rohan|hiring manager|the team) (was|were|is|are) (really )?(impressed|keen|excited)/.test(s)) reveal.push("manager_keen");
+
+  const amounts = extractRupeeAmounts(speech, { salaryContext: true });
+  const salaryFigures = amounts.filter((a) => a.unit === "lakh" || a.amount >= 500000);
+  let bonus: RupeeAmount | null = null;
+  if (mentionsBonus) {
+    const candidates = amounts.filter((a) => a.amount >= 10000 && a.amount <= 200000 && a.unit !== "lakh");
+    if (candidates.length) bonus = candidates.reduce((m, a) => (a.amount > m.amount ? a : m));
+  }
+
+  const norm = normalizeMoneyText(speech);
+  // Clause boundaries need the commas that normalizeMoneyText drops ("9,50,000" → "950000").
+  const withCommas = speech.toLowerCase().replace(/₹/g, " rs ");
+  let base: RupeeAmount | null = null;
+  const { currentBase } = scene.custom;
+  const near = (a: number, b: number | null | undefined) => typeof b === "number" && Math.abs(a - b) < 2500;
+  const playerNamed = (a: number) => near(a, scene.custom.highestAsk) || near(a, scene.custom.playerStatedMinimum) || near(a, hidden.statedExpectation);
+  // Every salary figure above what's on the table is classified in its own clause.
+  // Emma's OWN numbers are offers by default: anything else would let her say a
+  // figure the game never records. A number the PLAYER named needs explicit agreement.
+  const committed: RupeeAmount[] = [];
+  for (const a of salaryFigures) {
+    if (a.amount <= currentBase || a.amount > hidden.maxBase * 1.5) continue;
+    const { clause, question } = clauseAt(withCommas, toCommaIndex(withCommas, a.index));
+    if (question || ATTRIBUTED_RE.test(clause) || NEGATED_RE.test(clause) || NOT_AN_OFFER_RE.test(clause)) continue;
+    if (playerNamed(a.amount) && !(COMMIT_BEFORE_RE.test(norm.slice(Math.max(0, a.index - 40), a.index)) || FIGURE_WORKS_RE.test(clause))) continue;
+    committed.push(a);
+  }
+  if (committed.length) base = committed.reduce((m, a) => (a.amount > m.amount ? a : m));
+  // "I can take you to the top of the band": an offer at the ceiling without a number.
+  if (!base && hidden.maxBase > currentBase && /\b(?:(take|bring|get|move) (you|it|base|the base) (up )?to|(i|we) can (offer|do)|offer(ing)? you) (is )?(the )?(very )?(top|ceiling|max(imum)?) of (the|my|our) (band|range)\b/.test(norm)) {
+    base = { amount: hidden.maxBase, unit: "raw", index: 0, raw: "" };
+    if (!reveal.includes("base_capped")) reveal.push("base_capped");
+  }
+  return { reveal, base, bonus, salaryFigures };
+}
+
+/** Replace one figure in the original (un-normalised) sentence with a same-style rendering of `amount`. */
+function rewriteFigure(sentence: string, figure: RupeeAmount, amount: number): string {
+  if (!figure.raw) return sentence;
+  // Build a matcher tolerant of case, commas inside digit runs and a leading rupee sign.
+  const pattern = figure.raw
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/(\d)(?=\d)/g, "$1,?")
+    .replace(/\s+/g, "\\s+");
+  const re = new RegExp(pattern, "i");
+  if (!re.test(sentence)) return sentence;
+  const out = sentence.replace(re, formatAmountLike(amount, figure.raw));
+  // Keep sentence-initial capitalisation ("Nine point five…" → "Nine point two…").
+  return /^[A-Z]/.test(sentence) ? out.charAt(0).toUpperCase() + out.slice(1) : out;
 }
 
 function onTable(c: CounterOfferScene): string {
@@ -239,15 +372,24 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       signingBonus: "joining bonus in rupees (integer) if you are offering/raising one in this speech",
       playerMinimum: "if the player stated a minimum/floor salary, that number in rupees",
     },
-    preTurn: ({ hidden, scene }, playerRead, text) => {
+    preTurn: (ctx, playerRead, text) => {
+      const { hidden, scene } = ctx;
       const c: CounterOfferScene = { ...scene.custom };
       let read = playerRead;
       const dir: string[] = [];
       const fmt = formatINR;
-      // In a salary negotiation a bare "nine point five" means lakh: re-read with that context.
+      // In a salary negotiation a bare "nine point five" means lakh: re-read with that
+      // context, from the corrected part of the line only ("twelve... I mean nine point five").
       if (read.ask === null && read.minimum === null) {
-        const salaryAmounts = extractRupeeAmounts(text, { salaryContext: true }).filter((a) => a.unit === "lakh" || a.amount >= 300000);
+        const salaryAmounts = extractRupeeAmounts(correctedPortion(text), { salaryContext: true }).filter((a) => a.unit === "lakh" || a.amount >= 300000);
         if (salaryAmounts.length) read = { ...read, ask: Math.max(...salaryAmounts.map((a) => a.amount)), signals: [...new Set([...read.signals, "clear_ask" as const])] };
+      }
+      // "Nine point two then, I accept": a yes that names a different, higher figure is a
+      // counter-offer, not acceptance of what's on the table. The rules decide, not the model.
+      const dropSignals: PlayerSignal[] = [];
+      if (read.signals.includes("accepted_terms") && read.ask !== null && read.ask > c.currentBase) {
+        read = { ...read, signals: read.signals.filter((s) => s !== "accepted_terms") };
+        dropSignals.push("accepted_terms");
       }
       if (read.minimum !== null) c.playerStatedMinimum = read.minimum;
       if (read.ask !== null) c.highestAsk = Math.max(c.highestAsk ?? 0, read.ask);
@@ -258,7 +400,7 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       if (unrealistic) c.unrealisticAsks += 1;
 
       const headroom = Math.max(0, hidden.maxBase - c.currentBase);
-      const budget = concessionBudget(sig, c, hidden, scene);
+      const budget = concessionBudget(sig, c, hidden, scene, ctx.difficulty);
       let cap = c.currentBase + round5k(headroom * budget);
       const lower = text.toLowerCase();
 
@@ -266,6 +408,8 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
         c.accepted = true;
         cap = c.currentBase;
         dir.push(`They just said yes to what's on the table (${onTable(c)}). Confirm those exact terms in a sentence or two, sound pleased, and close. Do not improve the offer. Do not ask if they're sure.`);
+        if (read.ask !== null && read.ask < c.currentBase)
+          dir.push(`They said ${fmt(read.ask)}, but what's on the table is ${fmt(c.currentBase)} and that is what they're getting. Confirm ${fmt(c.currentBase)}, not their number.`);
       } else if (read.minimum !== null) {
         const m = Math.min(read.minimum, hidden.maxBase);
         cap = Math.max(c.currentBase, m);
@@ -297,7 +441,9 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       }
       if (!sig.has("accepted_terms")) dir.push(`Never say a base above ${fmt(cap)} this turn, and never mention your ceiling.`);
       c.turnCap = cap;
-      return { custom: c, direction: dir, moves: read.minimum !== null ? { proposal: { playerMinimum: read.minimum } } : undefined };
+      if (dropSignals.includes("accepted_terms"))
+        dir.push(`They said yes, but to ${fmt(read.ask!)}, not to what's on the table. That's a counter, not a deal: answer the number (within the limit above). If you agree to it, say the figure; if not, say what you can do. Don't treat it as settled.`);
+      return { custom: c, direction: dir, dropSignals, moves: read.minimum !== null ? { proposal: { playerMinimum: read.minimum } } : undefined };
     },
     reduceProposal: ({ hidden, scene }, moves) => {
       const custom: CounterOfferScene = { ...scene.custom };
@@ -342,42 +488,75 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
       }
       return { custom, flags };
     },
-    inferMovesFromSpeech: (speech, { hidden, scene }) => {
-      const s = speech.toLowerCase();
-      const reveal: string[] = [];
+    inferMovesFromSpeech: (speech, ctx) => {
+      const read = readOfferSpeech(speech, ctx);
       const proposal: Record<string, number> = {};
-      const mentionsBonus = /(joining|sign[- ]?on|signing)\s*bonus|one[- ]time\s+(bonus|payment)|sign[- ]?on\b/.test(s);
-      const mentionsCap = /(capped|cap on|ceiling|fixed band|band is fixed|top of the band|can't (go|stretch|move) (any )?(higher|further|past)|no way around it|as high as (i|we) can)/.test(s);
-      const flexible = /(flexib|room|wiggle|some movement|could look at|can (do|offer|put together|sweeten|add)|there is some|might be able|i'?ll add|add a)/.test(s);
-      if (mentionsCap) reveal.push("base_capped");
-      if (mentionsBonus && flexible) reveal.push("bonus_flexible");
-      if (/(urgent|urgency|short-?staffed|need someone (fast|quickly|soon)|stretched|under-?staffed|running lean)/.test(s)) reveal.push("urgency_high");
-      if (/(another candidate|other candidate|second candidate|someone else in the (process|pipeline|final))/.test(s)) reveal.push("competing_candidate");
-      if (/(rohan|hiring manager|the team) (was|were|is|are) (really )?(impressed|keen|excited)/.test(s)) reveal.push("manager_keen");
-
-      const amounts = extractRupeeAmounts(speech, { salaryContext: true });
-      if (mentionsBonus) {
-        const bonus = amounts.filter((a) => a.amount >= 10000 && a.amount <= 200000 && a.unit !== "lakh");
-        if (bonus.length) proposal.signingBonus = Math.max(...bonus.map((a) => a.amount));
-      }
-      const norm = normalizeMoneyText(speech);
-      const commitRe =
-        /(i can (?:do|take (?:it|base|you) (?:up )?to|go (?:up )?to|get you to|offer|stretch to|move to|bring (?:it|base) (?:up )?to)|we can (?:do|go (?:up )?to|land at|offer|move to|make it)|take (?:the )?base (?:up )?to|bring (?:the )?base (?:up )?to|move (?:the )?base to|land at|meet you at|i'll go to|i could (?:do|go to|stretch to)|offer(?:ing)? you|how about|let'?s (?:say|do|call it))\s*/g;
-      for (const m of norm.matchAll(commitRe)) {
-        const end = (m.index ?? 0) + m[0].length;
-        const near = amounts.filter((a) => a.index >= end && a.index <= end + 30 && (a.unit === "lakh" || a.amount >= 500000)).map((a) => a.amount);
-        const ok = near.filter((n) => n > scene.custom.currentBase && n <= hidden.maxBase * 1.5);
-        if (ok.length) {
-          proposal.base = Math.min(...ok);
-          break;
+      if (read.base) proposal.base = read.base.amount;
+      if (read.bonus) proposal.signingBonus = read.bonus.amount;
+      return { reveal: read.reveal, proposal };
+    },
+    /**
+     * Before a sentence is spoken, using the SAME reader that records offers:
+     * a base figure Emma commits to above this turn's cap is lowered to the cap;
+     * a bonus above her maximum is lowered to the maximum; her hidden ceiling is
+     * never said out loud above the cap, even in a refusal. Figures the player
+     * named may be repeated freely ("you asked for ten"). Every violation in a
+     * sentence is corrected, not just the first.
+     */
+    speechGate: (sentence, ctx): SpeechCheck => {
+      const near = (a: number, b: number | null | undefined) => typeof b === "number" && Math.abs(a - b) < 2500;
+      const { hidden, scene } = ctx;
+      const c = scene.custom;
+      const cap = Math.max(c.currentBase, Math.min(c.turnCap ?? c.currentBase, hidden.maxBase));
+      const reasons: string[] = [];
+      let text = sentence;
+      for (let pass = 0; pass < 4; pass++) {
+        const read = readOfferSpeech(text, ctx);
+        let next = text;
+        if (read.base && read.base.amount > cap) {
+          reasons.push(`committed base ${read.base.amount} above turn cap ${cap}`);
+          next = rewriteFigure(text, read.base, cap);
+        } else if (read.bonus && read.bonus.amount > hidden.signingBonusMax) {
+          reasons.push(`bonus ${read.bonus.amount} above max ${hidden.signingBonusMax}`);
+          next = rewriteFigure(text, read.bonus, hidden.signingBonusMax);
+        } else {
+          const leak = read.salaryFigures.find((a) => a.raw && near(a.amount, hidden.maxBase) && hidden.maxBase > cap && !near(a.amount, c.highestAsk) && !near(a.amount, c.playerStatedMinimum));
+          if (leak) {
+            reasons.push(`hidden ceiling ${hidden.maxBase} spoken above turn cap ${cap}`);
+            next = rewriteFigure(text, leak, cap);
+          }
         }
-        if (/^(is |you )?(the )?(very )?(top|ceiling|max(imum)?) of (the|my|our) (band|range)/.test(norm.slice(end, end + 40)) && hidden.maxBase > scene.custom.currentBase) {
-          proposal.base = hidden.maxBase;
-          if (!reveal.includes("base_capped")) reveal.push("base_capped");
-          break;
+        if (next === text) break;
+        text = next;
+      }
+      // Once the player has accepted, the deal is what's on the table: a confirmation that
+      // names any other base figure ("nine point two it is" with 9.7 agreed) is corrected.
+      if (c.accepted) {
+        for (let pass = 0; pass < 4; pass++) {
+          const wrong = confirmedFigures(text).find((a) => !near(a.amount, c.currentBase));
+          if (!wrong) break;
+          reasons.push(`confirmed base ${wrong.amount} but the deal is ${c.currentBase}`);
+          const next = rewriteFigure(text, wrong, c.currentBase);
+          if (next === text) break;
+          text = next;
         }
       }
-      return { reveal, proposal };
+      // The same for the joining bonus: accepting seals it. One that wasn't agreed can't be
+      // added while confirming; a different amount is corrected to the agreed one.
+      let bonusUnsafe = false;
+      if (c.accepted) {
+        const bonus = readOfferSpeech(text, ctx).bonus;
+        if (bonus && !near(bonus.amount, c.currentSigningBonus)) {
+          reasons.push(`confirmed bonus ${bonus.amount} but the deal has ${c.currentSigningBonus}`);
+          if (c.currentSigningBonus > 0) text = rewriteFigure(text, bonus, c.currentSigningBonus);
+          else bonusUnsafe = true;
+        }
+      }
+      if (!reasons.length) return { ok: true };
+      // If a figure couldn't be rewritten in place, drop the sentence rather than speak it.
+      const still = readOfferSpeech(text, ctx);
+      const unsafe = bonusUnsafe || (still.base && still.base.amount > cap) || (still.bonus && still.bonus.amount > hidden.signingBonusMax);
+      return { ok: false, reason: reasons.join("; "), rewrite: unsafe ? null : text };
     },
     director: ({ hidden, scene }) => {
       const notes: string[] = [];

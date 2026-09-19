@@ -40,6 +40,23 @@ describe("readPlayerUtterance", () => {
     expect(sig("Can you walk me through the whole package, bonus and review cycle?")).toContain("asked_about_total_comp");
     expect(sig("Bonus.")).not.toContain("asked_about_total_comp");
   });
+
+  it("takes the corrected version when the player corrects themselves mid-line", () => {
+    const r = readPlayerUtterance("I was hoping for twelve lakh... no wait, I mean nine point five lakh.");
+    expect(r.ask).toBe(950000);
+    expect(r.signals).toContain("owned_mistake");
+    expect(readPlayerUtterance("Ten lakh. Actually, make that ten point five lakh.").ask).toBe(1050000);
+    expect(readPlayerUtterance("I accept. No wait, that's not what I meant, can you do ten lakh?").signals).not.toContain("accepted_terms");
+    // A trailing "I mean" with nothing after it corrects nothing.
+    expect(readPlayerUtterance("Ten lakh, I mean").ask).toBe(1000000);
+  });
+
+  it("a conditional yes is an ask about the condition, not an acceptance", () => {
+    expect(sig("Yes, if you can get the bonus to sixty thousand.")).not.toContain("accepted_terms");
+    expect(sig("I'll take it, but only with a sixty thousand joining bonus.")).not.toContain("accepted_terms");
+    expect(sig("Deal, on the condition that the review is in six months.")).not.toContain("accepted_terms");
+    expect(sig("Okay. Deal.")).toContain("accepted_terms");
+  });
 });
 
 describe("evaluation grounding", () => {

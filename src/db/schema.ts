@@ -120,6 +120,12 @@ export const dialogueTurns = sqliteTable(
     modality: text("modality").$type<"voice" | "text" | "generated">().notNull(),
     moves: text("moves", { mode: "json" }).$type<NPCMoves | null>(),
     createdAt: text("created_at").notNull(),
+    /** Canonical transcript: true when the player cut this NPC line off; `text` then holds only what was heard. */
+    interrupted: integer("interrupted", { mode: "boolean" }),
+    /** Full generated line for interrupted turns (diagnostics only). */
+    generatedText: text("generated_text"),
+    /** Scene state the NPC turn was reduced from, so an interrupted line can be re-reduced on what was actually heard. */
+    sceneBefore: text("scene_before", { mode: "json" }).$type<SceneState | null>(),
   },
   (t) => [uniqueIndex("dialogue_turns_attempt_idx").on(t.attemptId, t.idx)],
 );

@@ -39,11 +39,31 @@ function isQuestion(t: string): boolean {
   return /\?/.test(t) || QUESTION_WORDS.test(t.trim());
 }
 
+/**
+ * People correct themselves mid-line: "ten lakh... no wait, I mean nine point
+ * five". What follows the LAST correction marker is what they meant; the
+ * earlier version is dropped for figures and asks. Signals are still read from
+ * the whole line (owning a slip is itself a signal), but numbers come only from
+ * the corrected part.
+ */
+const CORRECTION = /\b(no wait|wait,? no|wait,? (?:that's|thats) not what i meant|that's not what i meant|scratch that|i mean|i meant|actually,? (?:no|make (?:it|that))|sorry,? (?:i mean|make that|not)|let me (?:rephrase|correct that|start again)|correction)\b/gi;
+
+export function correctedPortion(text: string): string {
+  let last: RegExpExecArray | null = null;
+  for (const m of text.matchAll(CORRECTION)) last = m;
+  if (!last) return text;
+  const after = text.slice((last.index ?? 0) + last[0].length).trim();
+  // "I mean" at the very end ("...ten lakh, I mean") corrects nothing; keep the line.
+  return after.split(/\s+/).filter(Boolean).length >= 1 ? after : text;
+}
+
 export function readPlayerUtterance(text: string): PlayerRead {
+  const corrected = correctedPortion(text);
   const t = normalizeMoneyText(text).replace(/[’‘]/g, "'");
   const signals = new Set<PlayerSignal>();
   const words = t.split(/\s+/).filter(Boolean);
-  const amounts = extractRupeeAmounts(text);
+  const amounts = extractRupeeAmounts(corrected);
+  if (corrected !== text) signals.add("owned_mistake");
   const salaryAmounts = amounts.filter((a) => a.unit === "lakh" || a.amount >= 300000).map((a) => a.amount);
   const hasBonusWords = /\b(bonus|joining|sign[- ]?on|signing)\b/.test(t);
   const bonusAmounts = hasBonusWords ? amounts.filter((a) => a.amount >= 5000 && a.amount < 300000 && a.unit !== "lakh").map((a) => a.amount) : [];
@@ -70,8 +90,10 @@ export function readPlayerUtterance(text: string): PlayerRead {
   if (ask !== null) signals.add("clear_ask");
 
   // A real yes, not a conditional one: "anything above nine and I'm in" is a floor, not an acceptance.
-  const conditional = /\b(if|only if|as long as|provided|unless|anything above|anything over|above that|over that|as soon as)\b/.test(t) || minimum !== null;
-  if (ACCEPT.test(t) && !conditional) signals.add("accepted_terms");
+  // Read from the corrected part only: "I accept... no wait, can you do ten?" is not a yes.
+  const tc = normalizeMoneyText(corrected).replace(/[’‘]/g, "'");
+  const conditional = /\b(if|only if|as long as|provided|unless|anything above|anything over|above that|over that|as soon as|but only|on the condition)\b/.test(tc) || minimum !== null;
+  if (ACCEPT.test(tc.replace(/[.!?\s]+$/, "")) && !conditional) signals.add("accepted_terms");
   if (words.length > 90) signals.add("rambling");
 
   return { signals: [...signals], ask, minimum, bonusAsk: bonusAmounts.length ? Math.max(...bonusAmounts) : null, wordCount: words.length };

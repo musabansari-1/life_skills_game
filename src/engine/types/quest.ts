@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { Consequence } from "./consequences";
 import type { Evaluation, RubricCriterion } from "./evaluation";
 import type { NPCInstanceState, NPCMemory, Relationship } from "./npc";
-import type { NPCMoves, SceneState } from "./scene";
+import type { NPCMoves, PlayerSignal, SceneState } from "./scene";
 import type { SkillId } from "./skills";
 import type { WorldState } from "./world";
 import type { CompetencyProfile } from "./skills";
@@ -62,7 +62,16 @@ export interface SceneContext<H, S> {
   world: WorldState;
   npc: NPCInstanceState;
   playerName: string;
+  /** Quest difficulty (1-5). Shapes NPC resistance; see engine/scene/difficulty. */
+  difficulty?: 1 | 2 | 3 | 4 | 5;
 }
+
+/**
+ * Verdict of a quest's speech gate on one sentence the NPC is about to say.
+ * `rewrite` replaces the sentence so it agrees with the rules (e.g. the figure
+ * is lowered to the allowed cap); with no rewrite the sentence is dropped.
+ */
+export type SpeechCheck = { ok: true } | { ok: false; reason: string; rewrite: string | null };
 
 export interface QuestScene<H, S> {
   /** Instantiate hidden NPC state for this attempt. May vary by world state / relationship. */
@@ -100,7 +109,28 @@ export interface QuestScene<H, S> {
    * can move) and tell the NPC in `direction`, so what the NPC *says* and what
    * the rules *allow* agree. Must be pure. `moves` are merged into the NPC's own.
    */
-  preTurn?: (ctx: SceneContext<H, S>, read: PlayerRead, playerText: string) => { custom?: S; moves?: Partial<NPCMoves>; direction?: string[] };
+  preTurn?: (
+    ctx: SceneContext<H, S>,
+    read: PlayerRead,
+    playerText: string,
+  ) => {
+    custom?: S;
+    moves?: Partial<NPCMoves>;
+    direction?: string[];
+    /**
+     * Signals the rules have ruled out for this line, whoever reported them
+     * (e.g. "nine point two then, I accept" is a counter, not acceptance of
+     * what's on the table). Removed from the deterministic read AND the model's perception.
+     */
+    dropSignals?: PlayerSignal[];
+  };
+  /**
+   * Runs on every sentence of NPC speech BEFORE it is streamed, spoken or
+   * recorded. The systematic guarantee that what the NPC says agrees with what
+   * the rules allow this turn (e.g. no base above `turnCap`). Must be pure and
+   * conservative: only flag what `inferMovesFromSpeech` would record as a move.
+   */
+  speechGate?: (sentence: string, ctx: SceneContext<H, S>) => SpeechCheck;
   /** Turns the numbers into behavioural direction for the NPC model, each turn. */
   director: (ctx: SceneContext<H, S>) => string[];
   /** Visible-to-player scene summary, e.g. "Offer on the table: ₹8.5L". */

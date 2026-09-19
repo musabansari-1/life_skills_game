@@ -2,8 +2,12 @@
  * Browser implementations of the voice contracts using the Web Speech API.
  * Zero cost, low latency, works in Chrome/Edge/Safari. Quality varies by OS
  * voices; the interfaces exist so a server TTS/STT can replace these.
+ *
+ * Everything conversational (turn-taking, interruption, delivery tracking)
+ * lives in the platform-neutral ConversationController; this file only adapts
+ * the browser engines to the SpeechRecognizer / SpeechSynthesizer contracts.
  */
-import type { RecognizerEvents, SpeechRecognizer, SpeechSynthesizer, VoiceProfile } from "./types";
+import type { RecognizerEvents, RecognizerStartOptions, SpeakOptions, SpeechRecognizer, SpeechSynthesizer, VoiceProfile } from "./types";
 import { Endpointer } from "./endpointing";
 
 type SR = typeof window extends { SpeechRecognition: infer T } ? T : never;
@@ -19,9 +23,10 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
   private ctor = getSpeechRecognitionCtor();
   private finalText = "";
   private endpointer: Endpointer | null = null;
+  private events: RecognizerEvents | null = null;
   readonly available = !!this.ctor;
 
-  start(events: RecognizerEvents, opts?: { lang?: string }) {
+  start(events: RecognizerEvents, opts?: RecognizerStartOptions) {
     if (!this.ctor) {
       events.onError("Speech recognition is not supported in this browser.", true);
       return;
@@ -29,38 +34,53 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
     this.abort();
     const rec = new this.ctor();
     this.rec = rec;
+    this.events = events;
     this.finalText = "";
     rec.lang = opts?.lang ?? "en-IN";
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     // Hands-free turns: stop listening when the player pauses after speaking.
+    // In monitor mode (listening for a barge-in while the NPC speaks) nothing
+    // ends the session until the controller arms endpointing.
     this.endpointer?.cancel();
-    const endpointer = new Endpointer(() => {
-      if (this.rec === rec) this.stop();
-    });
+    const endpointer = this.newEndpointer(rec);
     this.endpointer = endpointer;
-    endpointer.start();
+    endpointer.start({ armed: !opts?.monitor });
     rec.onresult = (e: SpeechRecognitionEvent) => {
       let interim = "";
+      let sawFinal = false;
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) this.finalText += (this.finalText ? " " : "") + r[0].transcript.trim();
-        else interim += r[0].transcript;
+        if (r.isFinal) {
+          this.finalText += (this.finalText ? " " : "") + r[0].transcript.trim();
+          sawFinal = true;
+        } else interim += r[0].transcript;
       }
       const soFar = (this.finalText + " " + interim).trim();
-      endpointer.activity(soFar);
-      events.onInterim(soFar);
+      const isFinal = sawFinal && !interim.trim();
+      this.endpointer?.activity(soFar, { isFinal });
+      events.onInterim(soFar, { isFinal });
     };
     rec.onerror = (e: SpeechRecognitionErrorEvent) => {
       if (e.error === "no-speech" || e.error === "aborted") return;
       const fatal = e.error === "not-allowed" || e.error === "service-not-allowed";
-      events.onError(fatal ? "Microphone access was blocked. Allow the microphone or use text." : `Speech recognition error: ${e.error}`, fatal);
+      events.onError(
+        fatal
+          ? "Microphone access was blocked. Allow the microphone or use text."
+          : e.error === "network"
+            ? "Speech recognition lost its connection. Try again, or type."
+            : e.error === "audio-capture"
+              ? "No microphone was found. Check your input device or type instead."
+              : `Speech recognition error: ${e.error}`,
+        fatal,
+      );
     };
     rec.onend = () => {
-      endpointer.cancel();
+      this.endpointer?.cancel();
       if (this.rec === rec) {
         this.rec = null;
+        this.events = null;
         events.onFinal(this.finalText.trim());
         events.onEnd();
       }
@@ -70,6 +90,28 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
     } catch (err) {
       events.onError((err as Error).message, false);
     }
+  }
+
+  private newEndpointer(rec: SpeechRecognition): Endpointer {
+    return new Endpointer(() => {
+      if (this.rec === rec) this.stop();
+    });
+  }
+
+  armEndpointing(opts?: { reset?: boolean }) {
+    const rec = this.rec;
+    if (!rec) return;
+    if (opts?.reset) {
+      // Everything heard so far was the NPC's own voice: start the player's turn clean.
+      this.finalText = "";
+      this.endpointer?.cancel();
+      const e = this.newEndpointer(rec);
+      this.endpointer = e;
+      e.start();
+      this.events?.onInterim("", { isFinal: false });
+      return;
+    }
+    this.endpointer?.arm();
   }
 
   stop() {
@@ -84,6 +126,7 @@ export class BrowserSpeechRecognizer implements SpeechRecognizer {
     this.endpointer?.cancel();
     const r = this.rec;
     this.rec = null;
+    this.events = null;
     try {
       r?.abort();
     } catch {
@@ -126,7 +169,7 @@ export class BrowserSpeechSynthesizer implements SpeechSynthesizer {
     return v.find((x) => x.lang.toLowerCase().startsWith(profile.lang.toLowerCase())) ?? v.find((x) => x.lang.toLowerCase().startsWith("en")) ?? v[0] ?? null;
   }
 
-  speak(text: string, profile: VoiceProfile, opts?: { onStart?: () => void; onEnd?: () => void }): Promise<void> {
+  speak(text: string, profile: VoiceProfile, opts?: SpeakOptions): Promise<void> {
     if (!this.available || !text.trim()) return Promise.resolve();
     return new Promise((resolve) => {
       const u = new SpeechSynthesisUtterance(text);
@@ -144,6 +187,10 @@ export class BrowserSpeechSynthesizer implements SpeechSynthesizer {
         resolve();
       };
       u.onstart = () => opts?.onStart?.();
+      // Word boundaries (Chrome desktop, Safari): exact delivery progress for interruption.
+      u.onboundary = (e: SpeechSynthesisEvent) => {
+        if (typeof e.charIndex === "number") opts?.onProgress?.(e.charIndex);
+      };
       u.onend = finish;
       u.onerror = finish;
       this.current = u;

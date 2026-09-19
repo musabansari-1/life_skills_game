@@ -32,10 +32,19 @@ import type { Consequence } from "@/engine/types/consequences";
 import type { Evaluation } from "@/engine/types/evaluation";
 import { NPCMemorySchema, type NPCInstanceState, type Relationship } from "@/engine/types/npc";
 import { readPlayerUtterance } from "@/engine/parsing/player";
+import { heardPrefix, normalizeSpoken, splitSentences } from "@/engine/parsing/sentences";
+import { looksIncomplete } from "@/engine/parsing/utterance";
+import { npcEndsConversation } from "@/engine/parsing/closing";
+import type { PlayerSignal } from "@/engine/types/scene";
+import { difficultyProfile } from "@/engine/scene/difficulty";
+import { dropUnspokenFigures, movesForHeardSpeech } from "@/engine/scene/delivery";
+import { SpeechGate } from "@/engine/scene/speechGate";
+import type { NpcTurnInput, NpcTurnOutput } from "@/ai/tasks/npcTurn";
+import type { DeliveryReport } from "@/contracts/api";
 import type { AnyQuestDefinition, OutcomeContext, QuestResult, SceneContext } from "@/engine/types/quest";
 import { createSceneState, type DialogueTurn, type SceneState } from "@/engine/types/scene";
 import { applyConsequences, checkPrerequisites, recordQuestCompletion } from "@/engine/world";
-import { defaultEnv, formatINR, type EngineEnv } from "@/engine/util";
+import { defaultEnv, formatINR, textSimilarity, type EngineEnv } from "@/engine/util";
 import type { AnalyticsSink } from "./analytics";
 import { getOrCreateNpcState, loadPlayerState, saveCompetencies, saveNpcState, saveWorldState, type PlayerState } from "./player";
 
@@ -52,6 +61,18 @@ const EVALUATION_STALE_MS = 5 * 60_000;
 
 /** A player turn with no NPC reply older than this is treated as orphaned (server crashed mid-reply). */
 const ORPHAN_TURN_MS = 120_000;
+
+/** Spoken when the speech gate had to remove every sentence of a reply (rare; the model ignored the rules entirely). */
+const HOLD_LINE = "Hold on, let me think about that for a second.";
+
+/** A new sentence this similar (word overlap) to one the NPC already said is a repeat. */
+const REPEAT_SIMILARITY = 0.8;
+
+/** Hard ceiling on a spoken NPC line; the prompt asks for one to three sentences. */
+const MAX_SPOKEN_SENTENCES = 4;
+
+/** A line that trails off mid-thought is hesitation: it never counts as empty, evasive or vague. */
+const HESITATION_EXEMPT: PlayerSignal[] = ["silence_or_filler", "deflected", "vague_claim", "rambling"];
 
 /** Drizzle wraps driver errors; the SQLite/Postgres unique-violation text lives somewhere in the cause chain. */
 function isUniqueViolation(err: unknown): boolean {
@@ -138,7 +159,8 @@ export class GameService {
     }
     const hidden = quest.scene.createHidden({ world: state.world, npc });
     const custom = quest.scene.createCustom(hidden);
-    const patience = quest.scene.initialPatience ? quest.scene.initialPatience({ hidden, npc }) : 70;
+    // Difficulty as behaviour: harder quests start with less patience (see engine/scene/difficulty).
+    const patience = (quest.scene.initialPatience ? quest.scene.initialPatience({ hidden, npc }) : 70) + difficultyProfile(quest.difficulty).patienceOffset;
     const scene = createSceneState(custom, Math.max(20, Math.min(95, patience)));
     const attemptId = this.env.id();
     const now = this.env.now();
@@ -172,17 +194,17 @@ export class GameService {
     if (modality === "voice") await this.deps.analytics.track(playerId, "voice_conversation_started", { questId, attemptId });
 
     // Opening line: scripted or generated.
-    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden, scene, world: state.world, npc, playerName: state.displayName };
+    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden, scene, world: state.world, npc, playerName: state.displayName, difficulty: quest.difficulty };
     let openingText: string;
     if (quest.scene.opening.scripted) {
       openingText = quest.scene.opening.scripted(sceneCtx);
     } else {
       const turnDirection =
         mode === "second_chance" ? ["This is a second conversation: last time went badly (see what you remember). Acknowledge that briefly and in character, then get on with it. Don't lecture."] : undefined;
-      const out = await generateNpcTurn(this.taskCtx(playerId, attemptId), { quest, npcDef, npcState: npc, sceneCtx, turns: [], playerName: state.displayName, opening: true, turnDirection });
+      const out = await this.generateGated(playerId, attemptId, quest, sceneCtx, { quest, npcDef, npcState: npc, sceneCtx, turns: [], playerName: state.displayName, opening: true, turnDirection });
       openingText = out.speech;
     }
-    await this.appendTurn(attemptId, 0, "npc", openingText, "generated", null);
+    await this.appendTurn(attemptId, 0, "npc", openingText, "generated", null, { sceneBefore: scene });
     return this.getAttempt(playerId, attemptId);
   }
 
@@ -198,7 +220,7 @@ export class GameService {
     text: string,
     modality: "voice" | "text",
     onSpeech?: (speechSoFar: string, done: boolean) => void,
-    opts: { expectedTurnCount?: number } = {},
+    opts: { expectedTurnCount?: number; interrupted?: DeliveryReport } = {},
   ): Promise<{ attempt: AttemptView; npcText: string }> {
     const row = await this.requireAttempt(playerId, attemptId);
     if (row.status !== "active") throw new GameError("This conversation has ended.", "state");
@@ -225,6 +247,11 @@ export class GameService {
       throw new GameError("The conversation moved on since you last saw it. Refresh and try again.", "conflict");
     }
 
+    // Canonical transcript: if this line cut the NPC's last line off, keep only
+    // what the player heard and re-derive the scene from it BEFORE this line lands.
+    let scene = row.scene;
+    if (opts.interrupted) scene = (await this.applyDelivery(row, turns, opts.interrupted, state)).scene;
+
     const playerIdx = turns.length;
     let playerTurn: DialogueTurn;
     try {
@@ -240,10 +267,11 @@ export class GameService {
 
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = {
       hidden: row.hidden,
-      scene: row.scene,
+      scene,
       world: state.world,
       npc,
       playerName: state.displayName,
+      difficulty: quest.difficulty,
     };
 
     // Read the player's words deterministically BEFORE the NPC replies, and let
@@ -259,18 +287,43 @@ export class GameService {
         console.error("[orchestrator] preTurn threw", err);
       }
     }
+    // Signals ruled out for this line: by the quest's rules, or because the
+    // player trailed off mid-thought (hesitation is not an empty or evasive answer).
+    const trailedOff = looksIncomplete(cleaned);
+    const ruledOut = new Set<PlayerSignal>([...(pre?.dropSignals ?? []), ...(trailedOff ? HESITATION_EXEMPT : [])]);
+    read.signals = read.signals.filter((s) => !ruledOut.has(s));
+    const direction = [...(pre?.direction ?? [])];
+    if (trailedOff) {
+      direction.push(`${state.displayName} trailed off mid-thought. Don't answer a question they haven't finished asking and don't fill in the number for them. A short prompt to go on ("Around what?", "Go on.") is enough.`);
+    }
+    const cutOff = turns.at(-2);
+    if (cutOff?.speaker === "npc" && cutOff.interrupted) {
+      direction.push(
+        `${state.displayName} cut you off mid-sentence just now; you only got as far as "${cutOff.text || "…"}". Respond to what they said, like someone who was interrupted. Don't repeat the rest of your sentence unless they ask, and don't hold it against them. Anything you were about to offer was NOT offered: the offer on the table is exactly as the director notes say.`,
+      );
+    }
 
-    let out;
+    let out: NpcTurnOutput;
     try {
-      out = await generateNpcTurn(
-        this.taskCtx(playerId, attemptId),
-        { quest, npcDef, npcState: npc, sceneCtx, turns, playerName: state.displayName, opening: false, turnDirection: pre?.direction },
+      out = await this.generateGated(
+        playerId,
+        attemptId,
+        quest,
+        sceneCtx,
+        { quest, npcDef, npcState: npc, sceneCtx, turns, playerName: state.displayName, opening: false, turnDirection: direction },
         onSpeech,
       );
     } catch (err) {
       // Roll back the player turn so they can retry cleanly.
       await this.deps.db.delete(dialogueTurns).where(eq(dialogueTurns.id, playerTurn.id));
       throw new GameError(err instanceof Error ? err.message : "The character couldn't respond.", "ai");
+    }
+
+    // Speech is binding in both directions: a figure in the model's JSON that
+    // the character never said out loud is not an offer.
+    if (quest.scene.inferMovesFromSpeech) {
+      const dropped = dropUnspokenFigures(out.moves, out.speech);
+      if (dropped.length) out.problems.push(`unspoken proposals dropped: ${dropped.join(", ")}`);
     }
 
     // Merge perception: the model's own moves, the deterministic read of the
@@ -294,15 +347,152 @@ export class GameService {
       out.problems.push(`perceive fallback used${p.problems.length ? `: ${p.problems.join("; ")}` : ""}`);
       moves = mergeMoves(moves, p.moves);
     }
+    // Speech is binding: a character who audibly walks out has ended the conversation.
+    if (!moves.wantsToEnd && npcEndsConversation(out.speech)) {
+      moves = { ...moves, wantsToEnd: true, endReason: moves.endReason || `${npcDef.shortName} ended the call.` };
+      out.problems.push("walk-out inferred from speech");
+    }
+    // The rules outrank perception: a signal the rules ruled out doesn't count, whoever reported it.
+    if (ruledOut.size) moves = { ...moves, noticed: moves.noticed.filter((s) => !ruledOut.has(s)) };
     out.moves = moves;
 
     const reduced = reduceNpcTurn({ scene: quest.scene, ctx: sceneCtx, moves: out.moves });
     if (reduced.rejectedReveals.length) out.problems.push(`rejected reveals: ${reduced.rejectedReveals.join(",")}`);
-    await this.appendTurn(attemptId, playerIdx + 1, "npc", out.speech, "generated", out.moves);
+    // The scene the reducer ran from is kept with the line, so an interrupted
+    // line can be re-reduced on exactly what was heard.
+    await this.appendTurn(attemptId, playerIdx + 1, "npc", out.speech, "generated", out.moves, { sceneBefore: sceneCtx.scene });
     await this.deps.db.update(questAttempts).set({ scene: reduced.scene, updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
 
     const attempt = await this.getAttempt(playerId, attemptId);
     return { attempt, npcText: out.speech };
+  }
+
+  // ---------------------------------------------------------------- speech gate & delivery
+
+  /**
+   * Generate an NPC line through the quest's speech gate. Only gated sentences
+   * are streamed, spoken and recorded, so the audible line, the caption, the
+   * transcript and the scene rules all read the same text.
+   */
+  private async generateGated(
+    playerId: string,
+    attemptId: string,
+    quest: AnyQuestDefinition,
+    sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>>,
+    input: NpcTurnInput,
+    onSpeech?: (speechSoFar: string, done: boolean) => void,
+  ): Promise<NpcTurnOutput> {
+    // Sentences the character already said in this conversation: saying one again is a
+    // chatbot tell ("Hi." → the whole opening again), so the gate drops it.
+    const said = input.turns.filter((t) => t.speaker === "npc" && t.text).flatMap((t) => splitSentences(t.text)).filter((x) => x.split(/\s+/).length >= 5);
+    let repeats = 0;
+    const makeGate = () =>
+      new SpeechGate(
+        (sentence) => {
+          if (sentence.split(/\s+/).length >= 5 && said.some((x) => textSimilarity(x, sentence) >= REPEAT_SIMILARITY)) {
+            repeats += 1;
+            return { ok: false, reason: "repeated an earlier line", rewrite: null };
+          }
+          try {
+            return quest.scene.speechGate?.(sentence, sceneCtx) ?? { ok: true };
+          } catch (err) {
+            console.error("[orchestrator] speechGate threw", err);
+            return { ok: true };
+          }
+        },
+        // Spoken lines stay short: the prompt asks for one to three sentences; this is the hard stop.
+        { maxSentences: MAX_SPOKEN_SENTENCES },
+      );
+    let gate = makeGate();
+    let lastSent = "";
+    const emit = (done: boolean) => {
+      if (!onSpeech) return;
+      if (gate.text !== lastSent || done) {
+        lastSent = gate.text;
+        onSpeech(gate.text, done);
+      }
+    };
+    const run = async (turnInput: NpcTurnInput) => {
+      const o = await generateNpcTurn(this.taskCtx(playerId, attemptId), turnInput, (speechSoFar, done) => {
+        gate.push(speechSoFar, done);
+        if (!done) emit(false);
+      });
+      gate.push(o.speech, true);
+      return o;
+    };
+    let out = await run(input);
+    const problems = [...out.problems, ...gate.problems];
+    // Everything was a repeat: nothing has been sent yet, so ask once more, directly.
+    if (!gate.text.trim() && repeats > 0 && !input.opening) {
+      const first = gate;
+      gate = makeGate();
+      out = await run({ ...input, turnDirection: [...(input.turnDirection ?? []), "You were about to repeat something you already said. Don't. Answer their last line directly, in one short sentence, with something new."] });
+      problems.push("regenerated: reply only repeated earlier lines", ...gate.problems.filter((p) => !first.problems.includes(p)));
+    }
+    out.problems = problems;
+    if (!gate.text.trim()) out.problems.push("speech gate removed every sentence; using hold line");
+    out.speech = gate.text.trim() || HOLD_LINE;
+    emit(true);
+    if (gate.violations) {
+      await this.deps.analytics.track(playerId, "npc_speech_gated", { attemptId, questId: quest.id, violations: gate.violations, reasons: gate.problems.slice(0, 5) });
+    }
+    return out;
+  }
+
+  /**
+   * The player cut the NPC's last line off and did not follow with a line of
+   * their own. Records the heard prefix as canon. Idempotent; a stale report
+   * (a newer line exists) is ignored.
+   */
+  async reportDelivery(playerId: string, attemptId: string, report: DeliveryReport): Promise<AttemptView> {
+    const row = await this.requireAttempt(playerId, attemptId);
+    if (row.status === "active") {
+      const turns = await this.loadTurns(attemptId);
+      await this.applyDelivery(row, turns, report);
+    }
+    return this.getAttempt(playerId, attemptId);
+  }
+
+  /**
+   * Truncate the last NPC line to what was actually heard and re-derive the
+   * scene from that. Mutates `turns` in place so callers continue with canon.
+   */
+  private async applyDelivery(
+    row: { id: string; playerId: string; questId: string; npcId: string; hidden: Record<string, unknown>; scene: SceneState; snapshotBefore: Record<string, unknown> },
+    turns: DialogueTurn[],
+    report: DeliveryReport,
+    knownState?: PlayerState,
+  ): Promise<{ scene: SceneState; applied: boolean }> {
+    const last = turns.at(-1);
+    if (!last || last.speaker !== "npc" || last.index !== report.turnIndex || last.interrupted) return { scene: row.scene, applied: false };
+    const generated = last.text;
+    const heard = heardPrefix(generated, report.heardText);
+    if (normalizeSpoken(heard) === normalizeSpoken(generated)) return { scene: row.scene, applied: false };
+
+    const quest = getQuest(row.questId);
+    const turnRow = await this.deps.db.query.dialogueTurns.findFirst({ where: eq(dialogueTurns.id, last.id) });
+    const sceneBefore = turnRow?.sceneBefore ?? null;
+    let scene = row.scene;
+    let moves = last.moves;
+    if (sceneBefore && moves) {
+      const state = knownState ?? (await loadPlayerState(this.deps.db, row.playerId));
+      const npc = this.npcForAttempt(row, state);
+      const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: sceneBefore, world: state.world, npc, playerName: state.displayName, difficulty: quest.difficulty };
+      moves = movesForHeardSpeech(moves, heard, quest.scene, sceneCtx);
+      scene = reduceNpcTurn({ scene: quest.scene, ctx: sceneCtx, moves }).scene;
+    }
+    const now = this.env.now();
+    await this.deps.db.transaction(async (tx) => {
+      await tx.update(dialogueTurns).set({ text: heard, interrupted: true, generatedText: generated, moves }).where(eq(dialogueTurns.id, last.id));
+      await tx.update(questAttempts).set({ scene, updatedAt: now }).where(eq(questAttempts.id, row.id));
+    });
+    last.text = heard;
+    last.interrupted = true;
+    last.generatedText = generated;
+    last.moves = moves;
+    row.scene = scene;
+    await this.deps.analytics.track(row.playerId, "npc_interrupted", { attemptId: row.id, turnIndex: last.index, heardChars: heard.length, generatedChars: generated.length });
+    return { scene, applied: true };
   }
 
   // ---------------------------------------------------------------- conclude
@@ -568,12 +758,29 @@ export class GameService {
 
   private async loadTurns(attemptId: string): Promise<DialogueTurn[]> {
     const rows = await this.deps.db.query.dialogueTurns.findMany({ where: eq(dialogueTurns.attemptId, attemptId), orderBy: asc(dialogueTurns.idx) });
-    return rows.map((r) => ({ id: r.id, index: r.idx, speaker: r.speaker, text: r.text, modality: r.modality, moves: r.moves ?? null, createdAt: r.createdAt }));
+    return rows.map((r) => ({
+      id: r.id,
+      index: r.idx,
+      speaker: r.speaker,
+      text: r.text,
+      modality: r.modality,
+      moves: r.moves ?? null,
+      createdAt: r.createdAt,
+      ...(r.interrupted ? { interrupted: true, generatedText: r.generatedText ?? null } : {}),
+    }));
   }
 
-  private async appendTurn(attemptId: string, idx: number, speaker: DialogueTurn["speaker"], text: string, modality: DialogueTurn["modality"], moves: DialogueTurn["moves"]): Promise<DialogueTurn> {
+  private async appendTurn(
+    attemptId: string,
+    idx: number,
+    speaker: DialogueTurn["speaker"],
+    text: string,
+    modality: DialogueTurn["modality"],
+    moves: DialogueTurn["moves"],
+    extra: { sceneBefore?: SceneState | null } = {},
+  ): Promise<DialogueTurn> {
     const turn: DialogueTurn = { id: this.env.id(), index: idx, speaker, text, modality, moves, createdAt: this.env.now() };
-    await this.deps.db.insert(dialogueTurns).values({ id: turn.id, attemptId, idx, speaker, text, modality, moves, createdAt: turn.createdAt });
+    await this.deps.db.insert(dialogueTurns).values({ id: turn.id, attemptId, idx, speaker, text, modality, moves, createdAt: turn.createdAt, sceneBefore: extra.sceneBefore ?? null });
     return turn;
   }
 }

@@ -10,13 +10,15 @@ Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. T
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 110 unit + integration tests, no model calls
+pnpm test                         # 191 unit + integration tests, no model calls
 pnpm smoke                        # full loop against the configured provider, in-memory DB
 pnpm smoke aggressive             # the hostile path
 npx tsx scripts/e2e-walkthrough.ts   # Playwright UI walkthrough using local Chrome (dev server must be running)
 pnpm smoke:api                    # plays the game over /api/v1 with bearer tokens, like a native app (dev server must be running)
 npx tsx scripts/strategies.ts     # 7 Counter Offer strategies side by side against the configured model (SKIP_CONCLUDE=1 for scene only)
-npx tsx scripts/latency.ts        # first-speech / turn / conclude timing against the configured model
+npx tsx scripts/latency.ts [n]    # model first token / first speakable sentence / turn / conclude timing (n repeats)
+npx tsx scripts/conversation-scenarios.ts [names]   # 10 realtime scenarios (interrupt, pause, self-correction, …) against the real model
+npx tsx scripts/e2e-scene-smoke.ts   # browser check of the conversation screen (voice-mode UI, interruption, captions); dev server must be running
 ```
 
 Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `claude-opus-5`), or `AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY` + `AI_MODEL=<slug>`. `AI_PROVIDER=fake` runs the whole game deterministically with heuristics — good for UI work.
@@ -44,6 +46,8 @@ Verified in this phase:
 10. **Clients talk to the game only through `/api/v1` and `src/contracts/api.ts`.** No game rule runs on a client. Web pages may call `server/queries.ts` directly (same DTOs). Contract changes within v1 are additive only.
 12. **Rules decide before the NPC speaks; speech is binding.** Quest `preTurn` computes what the NPC may do from `readPlayerUtterance`; what the NPC says out loud (read by `inferMovesFromSpeech`) is what gets recorded. Don't reintroduce silent post-speech clamping.
 13. **Failure grade = progress blocked.** Replays of resolved quests are rehearsals (no world effects); replays of failed ones are second chances (become canon).
+14. **Only what was heard is canon.** NPC speech passes the quest's `speechGate` before it is streamed; an interrupted line is truncated to the heard prefix and the scene re-derived from it. Never store, evaluate or remember text the player didn't hear. `generatedText` on a turn is diagnostics only.
+15. **Voice logic lives in `ConversationController`.** Keep React, DOM and network out of it; platform adapters implement `SpeechRecognizer` / `SpeechSynthesizer` / `ConversationTransport`.
 11. **Mutations must be retry-safe.** Turns use `expectedTurnCount`; conclude is claimed atomically and commits in one transaction. Keep it that way for any new mutating endpoint.
 
 ## Where things are

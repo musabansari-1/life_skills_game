@@ -114,5 +114,13 @@ export const DialogueTurnSchema = z.object({
   /** NPC moves for npc turns; null otherwise. */
   moves: NPCMovesSchema.nullable().default(null),
   createdAt: z.string(),
+  /**
+   * Canonical-transcript fields. `text` is always what was actually delivered
+   * to the player. If the player cut the NPC off, `interrupted` is true and
+   * `generatedText` keeps the full line the model produced (diagnostics only:
+   * never shown to the player, never fed to evaluation or memory).
+   */
+  interrupted: z.boolean().optional(),
+  generatedText: z.string().nullable().optional(),
 });
 export type DialogueTurn = z.infer<typeof DialogueTurnSchema>;

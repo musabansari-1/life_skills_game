@@ -132,18 +132,20 @@ Recommended later additions, none of which block V1 native:
 The pipeline is split so that only the edges are platform-specific:
 
 ```
- [STT provider]  →  useVoiceSession (turn-taking)  →  gameClient.streamTurn / sendTurn  →  server
-   browser: Web Speech        platform-neutral             platform-neutral                (text only)
-   native: expo-speech-recognition / platform STT
- [TTS provider]  ←  takeSpeakableChunks (sentence chunker) ←  streamed NPC speech
-   browser: speechSynthesis   platform-neutral
+ [SpeechRecognizer]  →  ConversationController (turn-taking, barge-in,  →  ConversationTransport  →  server
+   browser: Web Speech      delivery tracking; platform-neutral class)     (gameClient: streamTurn,     (text only)
+   native: platform STT          ▲ wrapped by useVoiceSession (React)       reportDelivery)
+ [SpeechSynthesizer] ←  sentence queue + DeliveryTracker  ←  server-gated NPC speech (SSE)
+   browser: speechSynthesis
    native: expo-speech / server TTS
 ```
 
-- **Contracts** (`src/voice/types.ts`) define `SpeechRecognizer` and `SpeechSynthesizer`.
-- **The turn-taking state machine** (`src/voice/useVoiceSession.ts`) handles idle, listening, thinking and speaking, plus barge-in and sentence-queued TTS. It now contains **no DOM or browser code**. Providers are injected, so React Native reuses the hook as-is.
-- **Sentence chunking** (`src/voice/chunker.ts`) is pure and unit-tested.
-- **The server is audio-agnostic.** It receives text and streams text, so swapping STT/TTS vendors never touches the game.
+- **Contracts** (`src/voice/types.ts`) define `SpeechRecognizer`, `SpeechSynthesizer` and `ConversationTransport`.
+- **The conversation state machine** (`src/voice/controller.ts`, `ConversationController`) is a plain class: no React, no DOM, no network. It handles idle, listening, thinking and speaking; sentence-queued TTS; barge-in by tap or by voice; stale-audio cancellation; ordered sends; retry; and **delivery tracking** (how much of each NPC line was actually heard). `useVoiceSession` is a thin React adapter. A Swift/Kotlin client ports this one class.
+- **Sentence chunking** (`src/engine/parsing/sentences.ts`) is shared with the server's speech gate, so both sides split lines identically.
+- **Endpointing** (`src/voice/endpointing.ts`) and **barge-in echo filtering** (`src/voice/bargeIn.ts`) are pure and reusable by native recognizers.
+- **The server is audio-agnostic.** It receives text, streams text, and receives a text report of what was heard (`DeliveryReport`). Swapping STT/TTS vendors never touches the game.
+- **Interruptions:** a client that cuts an NPC line off sends `interrupted: { turnIndex, heardText }` on its next `TurnRequest`, or `POST /attempts/:id/delivery` if the player then says nothing. Both are idempotent. See `REALTIME-CONVERSATION-REVIEW.md`.
 
 **Streaming turn transport** uses content negotiation on `POST /attempts/:id/turn`:
 - With `Accept: text/event-stream`, the server streams SSE. `speech` events carry the growing NPC line, followed by one `result` (a `ClientAttempt`) or one `error` (an `ApiError`). The web app uses this. On native, it works with a streaming-capable fetch such as `expo/fetch` (Expo SDK 52+).
@@ -191,11 +193,14 @@ const { attempt, scene } = await api.startQuest("counter_offer", "voice");
 const voice = useVoiceSession({
   profile: scene.npc.voice,
   recognizer: nativeRecognizer,          // implements SpeechRecognizer (e.g. expo-speech-recognition)
-  synthesizer: nativeSynthesizer,        // implements SpeechSynthesizer (e.g. expo-speech)
-  sendTurn: async (text, modality, onSpeech) => {
-    const next = await api.streamTurn(attempt.id, { text, modality, expectedTurnCount: turnsSeen }, { onSpeech });
+  synthesizer: nativeSynthesizer,        // implements SpeechSynthesizer (e.g. expo-speech); onProgress if the engine reports word boundaries
+  sendTurn: async (text, modality, onSpeech, interrupted) => {
+    const next = await api.streamTurn(attempt.id, { text, modality, expectedTurnCount: turnsSeen, interrupted }, { onSpeech });
     setAttempt(next);
+    const npc = next.turns.filter((t) => t.speaker === "npc").at(-1);
+    return npc ? { npcText: npc.text, npcTurnIndex: npc.index } : null;
   },
+  reportDelivery: async (report) => setAttempt(await api.reportDelivery(attempt.id, report)),
 });
 // finish
 await api.conclude(attempt.id);            // show "reading the room…" (10–120 s)

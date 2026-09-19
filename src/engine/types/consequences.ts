@@ -60,6 +60,10 @@ export const GAME_EVENT_TYPES = [
   "onboarding_completed",
   "quest_started",
   "voice_conversation_started",
+  /** The player cut an NPC line off; only the heard part was recorded and the scene was re-derived from it. */
+  "npc_interrupted",
+  /** The speech gate rewrote or dropped a sentence the rules did not allow. */
+  "npc_speech_gated",
   "conversation_abandoned",
   "quest_completed",
   "quest_failed",

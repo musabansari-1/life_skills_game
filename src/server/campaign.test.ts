@@ -90,7 +90,8 @@ describe("Nova Labs campaign", () => {
     expect(offer.hidden.statedExpectation).toBe(800000);
     await game.submitPlayerTurn(playerId, offer.id, "I'd like ten lakh.", "text");
     const lastCall = fake.calls.filter((c) => c.task === "npc_turn").at(-1)!;
-    expect(lastCall.system).toMatch(/In screening they told you ₹8L would work/);
+    // The turn direction is per-turn (volatile) prompt text, kept out of the cacheable system prefix.
+    expect(`${lastCall.system}\n${lastCall.systemVolatile ?? ""}`).toMatch(/In screening they told you ₹8L would work/);
     await game.submitPlayerTurn(playerId, offer.id, "Okay, I accept.", "text");
     await game.concludeQuest(playerId, offer.id);
 
