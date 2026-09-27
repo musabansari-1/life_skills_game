@@ -59,7 +59,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/v1/attempts/[id
         }
       };
       try {
-        const { attempt } = await deps.game.submitPlayerTurn(deps.player.playerId, id, body.text, body.modality, (speechSoFar, done) => send("speech", { text: speechSoFar, done }), opts);
+        const { attempt } = await deps.game.submitPlayerTurn(deps.player.playerId, id, body.text, body.modality, (speechSoFar, done, identity) => send("speech", { text: speechSoFar, done, identity }), opts);
         send("result", toClientAttempt(attempt));
       } catch (err) {
         send("error", toApiError(err));

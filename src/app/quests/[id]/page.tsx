@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { NPCS } from "@/content/npcs";
 import { findQuest } from "@/content/quests";
 import { getLocation, getWorld } from "@/content/worlds";
-import { SKILLS } from "@/engine/types/skills";
+import { GameError } from "@/server/orchestrator";
 import { getCurrentPlayer } from "@/server/session";
 import { getGame } from "@/server/context";
 import { questBriefing } from "@/server/queries";
@@ -27,7 +27,10 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
   const player = await getCurrentPlayer(db);
   if (!player) redirect("/");
   // Same payload as GET /api/v1/quests/:id.
-  const b = await questBriefing(game, player.playerId, quest.id);
+  const b = await questBriefing(game, player.playerId, quest.id).catch((err) => {
+    if (err instanceof GameError && err.code === "not_found") notFound();
+    throw err;
+  });
   const npc = NPCS[quest.npcId];
   const dossier = b.npc;
   const world = getWorld(quest.worldId);
@@ -45,21 +48,29 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
               <p>You talk out loud. Pause when you&apos;re done, and they answer.</p>
             </div>
           )}
+          {b.transition && b.replayMode === "first" && (
+            <div className="mb-6">
+              <p className="text-xs tracking-[0.18em] uppercase text-brass">{b.transition.when}</p>
+              <p className="text-paper-2 mt-1">{b.transition.message}</p>
+            </div>
+          )}
           <p className="eyebrow" style={{ color: world?.accent }}>
-            {b.chapter ? `Chapter ${b.chapter.index} of ${b.chapter.total} · ` : ""}
-            {world?.name} · {location?.name}
+            {b.act ? `Act ${["I", "II", "III", "IV", "V", "VI"][b.act.index - 1]} · ` : ""}
+            {b.chapter ? `Chapter ${b.chapter.index} of ${b.chapter.total} · ` : b.kind === "recovery" ? "A separate repair · " : b.kind === "event" ? "Because of what happened · " : b.kind === "optional" ? "Optional · " : ""}
+            {location?.name ?? world?.name}
           </p>
-          <h1 className="font-display text-4xl sm:text-5xl mt-2 leading-tight">{quest.title}</h1>
-          <p className="text-paper-2 italic mt-2 text-lg">{quest.tagline}</p>
+          <h1 className="font-display text-4xl sm:text-5xl mt-2 leading-tight">{b.title}</h1>
+          <p className="text-paper-2 italic mt-2 text-lg">{b.tagline}</p>
 
           <div className="mt-8 space-y-6 text-paper-2 leading-relaxed">
+            {b.boss && <section className="card border-brass/40 p-5"><p className="eyebrow text-brass mb-2">A conversation that matters</p><p>{b.boss.stakes}</p><ul className="mt-3 space-y-2 text-sm">{b.boss.approaches.map((a) => <li key={a}>{a}</li>)}</ul></section>}
             <section>
               <p className="eyebrow mb-2">Situation</p>
-              <p>{quest.briefing.situation}</p>
+              <p>{b.briefing.situation}</p>
             </section>
             <section>
               <p className="eyebrow mb-2">Your objective</p>
-              <p className="text-paper text-lg">{quest.briefing.objective}</p>
+              <p className="text-paper text-lg">{b.briefing.objective}</p>
             </section>
             {b.carryOver.length > 0 && (
               <section className="rounded-xl border border-brass/30 bg-brass-dim/40 p-4">
@@ -77,7 +88,7 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
             <section>
               <p className="eyebrow mb-2">What you know</p>
               <ul className="space-y-1.5">
-                {quest.briefing.intel.map((i) => (
+                {b.briefing.intel.map((i) => (
                   <li key={i} className="flex gap-2">
                     <span className="text-brass">—</span>
                     <span>{i}</span>
@@ -85,10 +96,10 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
                 ))}
               </ul>
             </section>
-            {quest.briefing.hint && (
+            {b.briefing.hint && (
               <section className="border-l-2 border-brass/50 pl-4">
                 <p className="eyebrow mb-1">A thought</p>
-                <p className="text-paper-2">{quest.briefing.hint}</p>
+                <p className="text-paper-2">{b.briefing.hint}</p>
               </section>
             )}
             {b.lastOutcomeLabel && (
@@ -96,8 +107,8 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
                 <p className="eyebrow mb-1">Last time: {b.lastOutcomeLabel}</p>
                 <p className="text-sm text-paper-3 mt-1">
                   {b.replayMode === "rehearsal"
-                    ? `Replaying is a rehearsal: ${npc.shortName} is as they were then, your skills improve, and the world keeps what really happened. Try a different approach.`
-                    : `This is a second chance. ${npc.shortName} remembers the first conversation, and whatever happens now becomes what happened.`}
+                    ? `This is practice. ${npc.shortName} is as they were then, your skills still improve, and your story keeps what really happened. Try a different approach.`
+                    : `A further conversation. ${npc.shortName} remembers the first one, and whatever happens now becomes part of your story.`}
                 </p>
               </section>
             )}
@@ -117,12 +128,12 @@ export default async function QuestBriefingPage({ params, searchParams }: PagePr
               </div>
             )}
             <div className="flex gap-2 flex-wrap">
-              {quest.skills.map((s) => (
-                <span key={s} className="text-[11px] tracking-wide uppercase px-2.5 py-1 rounded-full border border-line text-paper-3">
-                  {SKILLS[s].label}
+              {b.skills.map((s) => (
+                <span key={s.id} className="text-[11px] tracking-wide uppercase px-2.5 py-1 rounded-full border border-line text-paper-3">
+                  {s.label}
                 </span>
               ))}
-              <span className="text-[11px] tracking-wide uppercase px-2.5 py-1 rounded-full border border-line text-paper-3">Difficulty {"●".repeat(quest.difficulty)}{"○".repeat(5 - quest.difficulty)}</span>
+              <span className="text-[11px] tracking-wide uppercase px-2.5 py-1 rounded-full border border-line text-paper-3">Difficulty {"●".repeat(b.difficulty)}{"○".repeat(5 - b.difficulty)}</span>
             </div>
           </div>
         </article>

@@ -9,6 +9,7 @@
  * one") and anything Emma told him about your negotiation.
  */
 import { defineQuest } from "@/engine/types/quest";
+import { milestoneAllowed } from "@/engine/campaign";
 import type { WorldState } from "@/engine/types/world";
 import { formatINR } from "@/engine/util";
 
@@ -37,6 +38,7 @@ function style(world: WorldState): string | null {
 
 export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
   id: "push_back_on_deadline",
+  failure: { kind: "commitment_failure", recoveryQuestId: "recovery_push_back_on_deadline" },
   title: "Push Back on a Deadline",
   tagline: "Rohan wants it Friday. It can't be done well by Friday.",
   worldId: "career_city",
@@ -45,13 +47,14 @@ export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
   difficulty: 2,
   skills: ["conflict_resolution", "communication", "confidence", "negotiation"],
   order: 50,
+  pacing: { category: "challenge", intensity: 3, emotionalPressure: 3, importance: 4, urgency: "normal" },
   briefing: {
     situation: "Week two. Rohan drops by your desk: the database migration needs to be done by Friday for the release. You've scoped it: done properly, it's Wednesday next week. Rushing it means skipping the rollback path.",
     objective: "Protect the quality of the work without becoming the person who says no.",
     intel: ["Rohan respects plans and hates surprises.", "Nobody has told Rohan about the rollback risk yet."],
     hint: "Say what you can do by Friday, not just what you can't.",
   },
-  prerequisites: [{ type: "world_unlocked_quest", questId: "push_back_on_deadline" }, { type: "world_flag", flag: "nova_labs.joined" }],
+  prerequisites: [{ type: "world_unlocked_quest", questId: "push_back_on_deadline" }, { type: "world_flag", flag: "nova_labs.joined" }, { type: "custom", label: "Get to know the platform team first.", check: ({ world }) => milestoneAllowed(world, "push_back_on_deadline") }],
   carryOver: ({ world }) => {
     const lines: string[] = [];
     if (world.flags.includes("interview.overpromised")) lines.push("In your interview you promised Rohan you'd be shipping in week one. It's week two.");
@@ -59,8 +62,11 @@ export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
     if (s === "hardball" || s === "walked_away") lines.push("Emma told Rohan you negotiate hard. He's expecting a fight.");
     if (s === "collaborative") lines.push("Emma told Rohan you were sharp but fair in the negotiation.");
     if (world.vars["nova_labs.knows_release_late"] === true) lines.push("You already know the release is late. Rohan's pressure makes sense.");
+    if (world.flags.includes("knows.rollback_untested")) lines.push("Maya told you the rollback has never run against production-sized data. That's evidence, if you use it.");
+    else if (world.flags.includes("maya.distant")) lines.push("You never did find out how the rollback is tested. Maya didn't offer.");
     return lines;
   },
+  transition: () => ({ when: "Week two", message: "Rohan stops by your desk. He doesn't sit down." }),
   objectives: [
     { id: "protect_quality", label: "Protect the rollback path", kind: "primary", description: "Don't agree to ship without a rollback path.", check: (s) => !(s.custom as Scene).capitulated },
     { id: "offer_alternative", label: "Propose a concrete alternative", kind: "hidden", description: "Offer a narrower Friday deliverable plus a real completion date.", check: (s) => (s.custom as Scene).alternativeProposed },
@@ -181,7 +187,7 @@ export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
       ],
       aftermath: ({ scene }) => [`You promised Rohan the full migration by ${scene.custom.agreedDate === "monday" ? "Monday" : "Wednesday"}. He'll hold you to that date.`, "Rohan respects a plan. It showed."],
       rewardMultiplier: 1.2,
-      followUpQuestIds: ["status_update"],
+      followUpQuestIds: ["nora_requirements"],
     },
     {
       id: "capitulated",
@@ -197,7 +203,7 @@ export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
       ],
       aftermath: () => ["You're shipping Friday without a rollback path. If anything goes wrong, there's no undo.", "Rohan is counting on Friday."],
       rewardMultiplier: 0.6,
-      followUpQuestIds: ["status_update"],
+      followUpQuestIds: ["nora_requirements"],
     },
     {
       id: "stalemate",
@@ -212,7 +218,7 @@ export const pushBackOnDeadline = defineQuest<Hidden, Scene>({
       ],
       aftermath: () => ["Nobody owns the migration date now. That will come back to you."],
       rewardMultiplier: 0.8,
-      followUpQuestIds: ["status_update"],
+      followUpQuestIds: ["nora_requirements"],
     },
   ],
   rewards: { baseXp: 80, skills: { conflict_resolution: 1, communication: 0.7, confidence: 0.6, negotiation: 0.5 } },

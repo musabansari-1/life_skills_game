@@ -51,6 +51,8 @@ export const firstDayNovaLabs = defineQuest<Hidden, Scene>({
   difficulty: 1,
   skills: ["communication", "listening", "confidence"],
   order: 40,
+  pacing: { category: "low_pressure", intensity: 1, emotionalPressure: 1, importance: 3, urgency: "normal" },
+  transition: () => ({ when: "Your first day", message: "A new badge, a borrowed laptop, and Emma by the coffee machine." }),
   briefing: {
     situation: "It's 9:10 on your first morning. Emma is walking you from reception to the platform floor. It's a five-minute walk, and she's the person who knows everyone.",
     objective: "Start well and find out something useful about the team before you meet your manager.",
@@ -164,7 +166,7 @@ export const firstDayNovaLabs = defineQuest<Hidden, Scene>({
         "Rohan has a deadline for you. It's coming.",
       ],
       rewardMultiplier: 1.1,
-      followUpQuestIds: ["push_back_on_deadline"],
+      followUpQuestIds: ["meet_maya"],
     },
     {
       id: "awkward",
@@ -179,7 +181,7 @@ export const firstDayNovaLabs = defineQuest<Hidden, Scene>({
       ],
       aftermath: () => ["Emma won't be going out of her way for you.", "Rohan has a deadline for you. It's coming."],
       rewardMultiplier: 0.8,
-      followUpQuestIds: ["push_back_on_deadline"],
+      followUpQuestIds: ["meet_maya"],
     },
   ],
   rewards: { baseXp: 50, skills: { communication: 1, listening: 0.9, confidence: 0.5 } },

@@ -13,9 +13,19 @@
  */
 import { and, asc, desc, eq, lt, ne, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { dialogueTurns, questAttempts } from "@/db/schema";
+import { dialogueTurns, questAttempts, worldStates } from "@/db/schema";
 import { getNPC } from "@/content/npcs";
 import { getQuest } from "@/content/quests";
+import { applyDirectorPlan, planDirector, proposalForQuest } from "@/engine/director";
+import { advanceContinuity } from "@/engine/director/continuity";
+import { DirectorProposalSchema, PreferencesSchema, type DirectorProposal } from "@/engine/director/types";
+import { WorldStateSchema } from "@/engine/types/world";
+import { isValidFacet } from "@/engine/types/skills";
+import { proposeNextEvent } from "@/ai/tasks/gameDirector";
+import { readSceneMeaning } from "@/ai/tasks/sceneRead";
+import { addSceneEvidence, selectFloor, participantDirection, scheduleReaction, pendingReaction, type TurnIdentity } from "@/engine/scene/ensemble";
+import { advanceCampaign, reconcileCampaign } from "@/engine/campaign";
+import { communicate } from "@/engine/campaign/information";
 import { evaluateConversation } from "@/ai/tasks/evaluate";
 import { extractMemory } from "@/ai/tasks/extractMemory";
 import { generateNpcTurn } from "@/ai/tasks/npcTurn";
@@ -101,6 +111,7 @@ export type ConcludeStage = "reviewing" | "remembering" | "evaluated" | "applyin
 const GRADE_RANK = { failure: 0, partial: 1, success: 2 } as const;
 
 export interface AttemptView {
+  directorProposal?: DirectorProposal;
   id: string;
   questId: string;
   npcId: string;
@@ -129,11 +140,18 @@ export class GameService {
 
   // ---------------------------------------------------------------- start
 
-  async startQuest(playerId: string, questId: string, modality: "voice" | "text" = "text"): Promise<AttemptView> {
-    const quest = getQuest(questId);
+  async startQuest(playerId: string, questId: string, modality: "voice" | "text" = "text", playMode: "story" | "practice" = "story"): Promise<AttemptView> {
     const state = await loadPlayerState(this.deps.db, playerId);
+    const proposal = proposalForQuest(state.world, questId);
+    let quest = getQuest(questId, proposal);
+    if (questId.startsWith("director_") && !proposal) throw new GameError("This event has not entered your story yet.", "prerequisites");
+    const evaluating = await this.deps.db.query.questAttempts.findFirst({ where: and(eq(questAttempts.playerId, playerId), eq(questAttempts.status, "evaluating")) });
+    if (evaluating) throw new GameError("Finish the current debrief before starting another conversation.", "conflict");
     const prereq = checkPrerequisites(quest.prerequisites, { world: state.world, competencies: state.competencies, npcs: state.npcs });
-    if (!prereq.ok) throw new GameError(prereq.unmet.join("; "), "prerequisites");
+    const hasWin = state.world.completedQuests.some((q) => q.questId === questId);
+    const hasFailure = state.world.failedQuests.some((q) => q.questId === questId);
+    const isReplay = hasWin || (hasFailure && (!quest.recovery || playMode === "practice"));
+    if (!prereq.ok && !isReplay) throw new GameError(prereq.unmet.join("; "), "prerequisites");
 
     // Abandon any other active attempt for this player (one scene at a time).
     const active = await this.deps.db.query.questAttempts.findFirst({ where: and(eq(questAttempts.playerId, playerId), eq(questAttempts.status, "active")) });
@@ -148,16 +166,27 @@ export class GameService {
     // gets a *second chance* that becomes the new canon.
     const wins = state.world.completedQuests.filter((q) => q.questId === questId);
     const fails = state.world.failedQuests.filter((q) => q.questId === questId);
-    const mode: AttemptMode = wins.length ? "rehearsal" : fails.length ? "second_chance" : "first";
+    const mode: AttemptMode = playMode === "practice" || wins.length || (!quest.recovery && fails.length) ? "rehearsal" : fails.length ? "second_chance" : "first";
     let npc = liveNpc;
+    let sceneWorld = state.world;
+    let pinnedProposal = proposal;
     let canonAttemptId: string | null = null;
+    let pinnedHidden: Record<string, unknown> | undefined;
+    let participantSnapshots = Object.fromEntries((quest.ensemble?.participants ?? []).map((p) => [p.npcId, getOrCreateNpcState(state, p.npcId)]));
     if (mode === "rehearsal") {
-      canonAttemptId = wins[0].attemptId;
-      const canon = await this.deps.db.query.questAttempts.findFirst({ where: eq(questAttempts.id, canonAttemptId) });
+      canonAttemptId = wins[0]?.attemptId ?? fails[0]?.attemptId ?? null;
+      const canon = canonAttemptId ? await this.deps.db.query.questAttempts.findFirst({ where: and(eq(questAttempts.id, canonAttemptId), eq(questAttempts.playerId, playerId)) }) : undefined;
+      if (canon) pinnedHidden = canon.hidden;
       const snap = canon?.snapshotBefore?.npcState as { relationship: Relationship; memory: unknown } | undefined;
       if (snap) npc = { ...liveNpc, relationship: snap.relationship, memory: NPCMemorySchema.parse(snap.memory) };
+      if (canon?.snapshotBefore.world) sceneWorld = WorldStateSchema.parse(canon.snapshotBefore.world);
+      if (canon?.snapshotBefore.participants) participantSnapshots = canon.snapshotBefore.participants as Record<string, NPCInstanceState>;
+      if (canon?.snapshotBefore.directorProposal) {
+        pinnedProposal = DirectorProposalSchema.parse(canon.snapshotBefore.directorProposal);
+        quest = getQuest(questId, pinnedProposal);
+      }
     }
-    const hidden = quest.scene.createHidden({ world: state.world, npc });
+    const hidden = pinnedHidden ?? quest.scene.createHidden({ world: sceneWorld, npc, competencies: state.competencies });
     const custom = quest.scene.createCustom(hidden);
     // Difficulty as behaviour: harder quests start with less patience (see engine/scene/difficulty).
     const patience = (quest.scene.initialPatience ? quest.scene.initialPatience({ hidden, npc }) : 70) + difficultyProfile(quest.difficulty).patienceOffset;
@@ -177,6 +206,9 @@ export class GameService {
       evaluation: null,
       result: null,
       snapshotBefore: {
+        participants: participantSnapshots,
+        world: sceneWorld,
+        ...(pinnedProposal ? { directorProposal: pinnedProposal } : {}),
         mode,
         canonAttemptId,
         npcState: { relationship: npc.relationship, memory: npc.memory },
@@ -194,7 +226,7 @@ export class GameService {
     if (modality === "voice") await this.deps.analytics.track(playerId, "voice_conversation_started", { questId, attemptId });
 
     // Opening line: scripted or generated.
-    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden, scene, world: state.world, npc, playerName: state.displayName, difficulty: quest.difficulty };
+    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden, scene, world: sceneWorld, npc, playerName: state.displayName, difficulty: quest.difficulty };
     let openingText: string;
     if (quest.scene.opening.scripted) {
       openingText = quest.scene.opening.scripted(sceneCtx);
@@ -204,7 +236,7 @@ export class GameService {
       const out = await this.generateGated(playerId, attemptId, quest, sceneCtx, { quest, npcDef, npcState: npc, sceneCtx, turns: [], playerName: state.displayName, opening: true, turnDirection });
       openingText = out.speech;
     }
-    await this.appendTurn(attemptId, 0, "npc", openingText, "generated", null, { sceneBefore: scene });
+    await this.appendTurn(attemptId, 0, "npc", openingText, "generated", null, { sceneBefore: scene, ...(quest.ensemble ? { identity: { npcId: npcDef.id, name: npcDef.shortName, addressedTo: "player", kind: "answer" } as TurnIdentity } : {}) });
     return this.getAttempt(playerId, attemptId);
   }
 
@@ -219,15 +251,15 @@ export class GameService {
     attemptId: string,
     text: string,
     modality: "voice" | "text",
-    onSpeech?: (speechSoFar: string, done: boolean) => void,
+    onSpeech?: (speechSoFar: string, done: boolean, identity?: TurnIdentity) => void,
     opts: { expectedTurnCount?: number; interrupted?: DeliveryReport } = {},
   ): Promise<{ attempt: AttemptView; npcText: string }> {
     const row = await this.requireAttempt(playerId, attemptId);
     if (row.status !== "active") throw new GameError("This conversation has ended.", "state");
-    const quest = getQuest(row.questId);
-    const npcDef = getNPC(row.npcId);
+    const quest = getQuest(row.questId, this.pinnedProposal(row));
+    let npcDef = getNPC(row.npcId);
     const state = await loadPlayerState(this.deps.db, playerId);
-    const npc = this.npcForAttempt(row, state);
+    let npc = this.npcForAttempt(row, state);
     const turns = await this.loadTurns(attemptId);
     const cleaned = text.trim().slice(0, 2000);
     if (!cleaned) throw new GameError("Say something first.", "state");
@@ -236,7 +268,7 @@ export class GameService {
     // - a client that has seen a different number of turns must resync, not append;
     // - if the last turn is the player's, a reply is still being generated.
     const last = turns.at(-1);
-    if (last?.speaker === "player") {
+    if (last?.speaker === "player" || last?.speaker === "system") {
       const ageMs = Date.parse(this.env.now()) - Date.parse(last.createdAt);
       if (ageMs < ORPHAN_TURN_MS) throw new GameError(`${npcDef.shortName} is still replying to your last line.`, "conflict");
       // Orphaned by a crash mid-generation: drop it so the scene can continue.
@@ -251,6 +283,8 @@ export class GameService {
     // what the player heard and re-derive the scene from it BEFORE this line lands.
     let scene = row.scene;
     if (opts.interrupted) scene = (await this.applyDelivery(row, turns, opts.interrupted, state)).scene;
+    // A player taking the floor cancels any unspoken NPC reaction.
+    if (quest.ensemble) scene = { ...scene, custom: { ...scene.custom, _reaction: null } };
 
     const playerIdx = turns.length;
     let playerTurn: DialogueTurn;
@@ -265,10 +299,30 @@ export class GameService {
     }
     turns.push(playerTurn);
 
+    let identity: TurnIdentity | undefined;
+    let ensembleDirection: string[] = [];
+    if (quest.semanticFeatures) {
+      const meaning = await readSceneMeaning(this.taskCtx(playerId, attemptId), { text: cleaned, turnIndex: playerIdx, features: quest.semanticFeatures,
+        participants: quest.ensemble?.participants.map((p) => p.npcId) ?? [quest.npcId], turns });
+      if (meaning.unavailable) {
+        await this.deps.db.delete(dialogueTurns).where(eq(dialogueTurns.id, playerTurn.id));
+        throw new GameError("The conversation could not be interpreted reliably. Please send that line again.", "ai");
+      }
+      scene = addSceneEvidence(scene, meaning.evidence);
+      if (quest.ensemble) {
+        const floor = selectFloor(quest.ensemble, scene, turns, meaning.addressedTo);
+        npcDef = getNPC(floor.npcId);
+        npc = this.npcForAttempt(row, state, floor.npcId);
+        identity = { npcId: npcDef.id, name: npcDef.shortName, addressedTo: floor.addressedTo, kind: floor.kind };
+        ensembleDirection = participantDirection(quest.ensemble, floor, scene);
+        onSpeech?.("", false, identity);
+      }
+    }
+
     const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = {
       hidden: row.hidden,
       scene,
-      world: state.world,
+      world: this.worldForAttempt(row, state),
       npc,
       playerName: state.displayName,
       difficulty: quest.difficulty,
@@ -292,7 +346,7 @@ export class GameService {
     const trailedOff = looksIncomplete(cleaned);
     const ruledOut = new Set<PlayerSignal>([...(pre?.dropSignals ?? []), ...(trailedOff ? HESITATION_EXEMPT : [])]);
     read.signals = read.signals.filter((s) => !ruledOut.has(s));
-    const direction = [...(pre?.direction ?? [])];
+    const direction = [...ensembleDirection, ...(pre?.direction ?? [])];
     if (trailedOff) {
       direction.push(`${state.displayName} trailed off mid-thought. Don't answer a question they haven't finished asking and don't fill in the number for them. A short prompt to go on ("Around what?", "Go on.") is enough.`);
     }
@@ -305,13 +359,17 @@ export class GameService {
 
     let out: NpcTurnOutput;
     try {
-      out = await this.generateGated(
+      const canonicalSpeech = quest.scene.canonicalSpeech?.(sceneCtx);
+      if (canonicalSpeech) {
+        out = { speech: canonicalSpeech, raw: canonicalSpeech, moves: { noticed: [], reveal: [], proposal: {}, wantsToEnd: false }, problems: [] };
+        onSpeech?.(canonicalSpeech, true, identity);
+      } else out = await this.generateGated(
         playerId,
         attemptId,
         quest,
         sceneCtx,
         { quest, npcDef, npcState: npc, sceneCtx, turns, playerName: state.displayName, opening: false, turnDirection: direction },
-        onSpeech,
+        onSpeech ? (text, done) => onSpeech(text, done, identity) : undefined,
       );
     } catch (err) {
       // Roll back the player turn so they can retry cleanly.
@@ -354,17 +412,55 @@ export class GameService {
     }
     // The rules outrank perception: a signal the rules ruled out doesn't count, whoever reported it.
     if (ruledOut.size) moves = { ...moves, noticed: moves.noticed.filter((s) => !ruledOut.has(s)) };
+    // Ensemble disclosures are grounded in delivered speech, never the model's reveal claims.
+    if (quest.ensemble) moves = { ...moves, reveal: quest.scene.inferMovesFromSpeech?.(out.speech, sceneCtx).reveal ?? [] };
     out.moves = moves;
 
     const reduced = reduceNpcTurn({ scene: quest.scene, ctx: sceneCtx, moves: out.moves });
+    if (quest.ensemble && identity) reduced.scene = scheduleReaction(quest.ensemble, reduced.scene, identity, playerIdx);
     if (reduced.rejectedReveals.length) out.problems.push(`rejected reveals: ${reduced.rejectedReveals.join(",")}`);
     // The scene the reducer ran from is kept with the line, so an interrupted
     // line can be re-reduced on exactly what was heard.
-    await this.appendTurn(attemptId, playerIdx + 1, "npc", out.speech, "generated", out.moves, { sceneBefore: sceneCtx.scene });
+    await this.appendTurn(attemptId, playerIdx + 1, "npc", out.speech, "generated", out.moves, { sceneBefore: sceneCtx.scene, identity });
     await this.deps.db.update(questAttempts).set({ scene: reduced.scene, updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
 
     const attempt = await this.getAttempt(playerId, attemptId);
     return { attempt, npcText: out.speech };
+  }
+
+  /** One optional NPC reaction, requested only after the preceding line was delivered.
+   * The player can take the floor instead; no background NPC loop is allowed. */
+  async continueEnsemble(playerId: string, attemptId: string, expectedTurnCount: number): Promise<AttemptView> {
+    const row = await this.requireAttempt(playerId, attemptId);
+    if (row.status !== "active") throw new GameError("The scene has ended.", "state");
+    const quest = getQuest(row.questId, this.pinnedProposal(row));
+    const turns = await this.loadTurns(attemptId), last = turns.at(-1);
+    if (turns.length !== expectedTurnCount || last?.speaker === "system" || last?.speaker === "player") throw new GameError("The conversation moved on.", "conflict");
+    const pending = pendingReaction(row.scene);
+    if (!quest.ensemble || !pending || last?.index !== pending.sourceTurnIndex || last.interrupted) return this.getAttempt(playerId, attemptId);
+    const participant = quest.ensemble.participants.find((p) => p.npcId === pending.npcId);
+    if (!participant) throw new GameError("Invalid scene participant.", "state");
+    let marker: DialogueTurn;
+    try { marker = await this.appendTurn(attemptId, turns.length, "system", "", "generated", null); }
+    catch (error) { if (isUniqueViolation(error)) throw new GameError("Someone is already replying.", "conflict"); throw error; }
+    try {
+      const state = await loadPlayerState(this.deps.db, playerId);
+      const npc = this.npcForAttempt(row, state, pending.npcId), npcDef = getNPC(pending.npcId);
+      const scene = { ...row.scene, custom: { ...row.scene.custom, _reaction: null } };
+      const ctx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene, npc, world: this.worldForAttempt(row, state), playerName: state.displayName, difficulty: quest.difficulty };
+      const floor = { npcId: pending.npcId, addressedTo: pending.addressedTo, kind: pending.kind, reason: "Respond briefly to the other participant's last delivered line, then give the player the floor.", pauseForPlayer: true as const };
+      const scripted = quest.scene.canonicalSpeech?.(ctx);
+      const out = scripted ? { speech: scripted } : await this.generateGated(playerId, attemptId, quest, ctx, { quest, npcDef, npcState: npc, sceneCtx: ctx, turns, playerName: state.displayName, opening: false, turnDirection: participantDirection(quest.ensemble, floor, scene) });
+      const moves = { noticed: [], proposal: {}, wantsToEnd: false, reveal: quest.scene.inferMovesFromSpeech?.(out.speech, ctx).reveal ?? [] };
+      const reduced = reduceNpcTurn({ scene: quest.scene, ctx, moves }).scene;
+      Object.assign(reduced, { turnCount: scene.turnCount, patience: scene.patience, signalCounts: scene.signalCounts, ended: scene.ended });
+      const identity: TurnIdentity = { npcId: pending.npcId, name: pending.name, addressedTo: pending.addressedTo, kind: pending.kind, autonomous: true };
+      await this.deps.db.transaction(async (tx) => {
+        await tx.update(dialogueTurns).set({ speaker: "npc", text: out.speech, moves, identity, sceneBefore: scene }).where(eq(dialogueTurns.id, marker.id));
+        await tx.update(questAttempts).set({ scene: reduced, updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
+      });
+      return this.getAttempt(playerId, attemptId);
+    } catch (error) { await this.deps.db.delete(dialogueTurns).where(eq(dialogueTurns.id, marker.id)); throw error; }
   }
 
   // ---------------------------------------------------------------- speech gate & delivery
@@ -469,17 +565,20 @@ export class GameService {
     const heard = heardPrefix(generated, report.heardText);
     if (normalizeSpoken(heard) === normalizeSpoken(generated)) return { scene: row.scene, applied: false };
 
-    const quest = getQuest(row.questId);
+    const quest = getQuest(row.questId, this.pinnedProposal(row));
     const turnRow = await this.deps.db.query.dialogueTurns.findFirst({ where: eq(dialogueTurns.id, last.id) });
     const sceneBefore = turnRow?.sceneBefore ?? null;
     let scene = row.scene;
     let moves = last.moves;
     if (sceneBefore && moves) {
       const state = knownState ?? (await loadPlayerState(this.deps.db, row.playerId));
-      const npc = this.npcForAttempt(row, state);
-      const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: sceneBefore, world: state.world, npc, playerName: state.displayName, difficulty: quest.difficulty };
+      const npc = this.npcForAttempt(row, state, last.identity?.npcId);
+      const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: sceneBefore, world: this.worldForAttempt(row, state), npc, playerName: state.displayName, difficulty: quest.difficulty };
       moves = movesForHeardSpeech(moves, heard, quest.scene, sceneCtx);
+      if (quest.ensemble) moves = { ...moves, reveal: quest.scene.inferMovesFromSpeech?.(heard, sceneCtx).reveal ?? [] };
       scene = reduceNpcTurn({ scene: quest.scene, ctx: sceneCtx, moves }).scene;
+      if (quest.ensemble) scene.custom._reaction = null;
+      if (last.identity?.autonomous) Object.assign(scene, { turnCount: sceneBefore.turnCount, patience: sceneBefore.patience, signalCounts: sceneBefore.signalCounts, ended: sceneBefore.ended });
     }
     const now = this.env.now();
     await this.deps.db.transaction(async (tx) => {
@@ -502,7 +601,7 @@ export class GameService {
     const row = await this.requireAttempt(playerId, attemptId);
     if (row.status === "completed") return this.getAttempt(playerId, attemptId);
     if (row.status !== "active" && row.status !== "evaluating") throw new GameError("This conversation was abandoned.", "state");
-    const quest = getQuest(row.questId);
+    const quest = getQuest(row.questId, this.pinnedProposal(row));
     const npcDef = getNPC(row.npcId);
     const state = await loadPlayerState(this.deps.db, playerId);
     const mode = ((row.snapshotBefore.mode as AttemptMode | undefined) ?? "first") as AttemptMode;
@@ -510,6 +609,7 @@ export class GameService {
     const npc = this.npcForAttempt(row, state);
     const turns = await this.loadTurns(attemptId);
     const playerTurns = turns.filter((t) => t.speaker === "player").length;
+    if (turns.at(-1)?.speaker === "system" || turns.at(-1)?.speaker === "player") throw new GameError("Wait for the current reply before concluding.", "conflict");
     if (playerTurns === 0) throw new GameError("Say at least one thing before concluding.", "state");
 
     const scene = row.scene.ended ? row.scene : endSceneByPlayer(row.scene);
@@ -519,15 +619,16 @@ export class GameService {
     // twice and apply rewards/consequences twice. A claim older than
     // EVALUATION_STALE_MS is presumed dead (server crashed) and may be re-claimed.
     const staleBefore = new Date(Date.parse(this.env.now()) - EVALUATION_STALE_MS).toISOString();
+    const evaluationClaimAt = this.env.now();
     const claim = await this.deps.db
       .update(questAttempts)
-      .set({ status: "evaluating", scene, updatedAt: this.env.now() })
+      .set({ status: "evaluating", scene, updatedAt: evaluationClaimAt })
       .where(and(eq(questAttempts.id, attemptId), or(eq(questAttempts.status, "active"), and(eq(questAttempts.status, "evaluating"), lt(questAttempts.updatedAt, staleBefore)))));
     if (claim.rowsAffected !== 1) {
       throw new GameError("Still weighing how that went. Check back in a moment.", "conflict");
     }
 
-    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene, world: state.world, npc, playerName: state.displayName };
+    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene, world: this.worldForAttempt(row, state), npc, playerName: state.displayName, difficulty: quest.difficulty };
 
     // 1. Evaluation and memory extraction are independent AI tasks: run them in
     //    parallel (the NPC's memory is written from the transcript + final scene,
@@ -556,7 +657,7 @@ export class GameService {
       evaluation = (await evaluateConversation(this.taskCtx(playerId, attemptId), { quest, npcDef, sceneCtx, turns, playerName: state.displayName })).evaluation;
       safeProgress("evaluated");
     } catch (err) {
-      await this.deps.db.update(questAttempts).set({ status: "active", updatedAt: this.env.now() }).where(eq(questAttempts.id, attemptId));
+      await this.deps.db.update(questAttempts).set({ status: "active", updatedAt: this.env.now() }).where(and(eq(questAttempts.id, attemptId), eq(questAttempts.status, "evaluating"), eq(questAttempts.updatedAt, evaluationClaimAt)));
       throw new GameError(err instanceof Error ? `Evaluation failed: ${err.message}` : "Evaluation failed", "ai");
     }
 
@@ -611,7 +712,53 @@ export class GameService {
         touchedNpcs[c.npcId] = target;
       }
     }
+    // Each witness remembers the shared, canonical transcript through their own perspective.
+    if (!rehearsal && quest.ensemble) {
+      const others = await Promise.all(quest.ensemble.participants.filter((p) => p.npcId !== npc.npcId).map(async (p) => {
+        const own = touchedNpcs[p.npcId] ?? { ...getOrCreateNpcState(state, p.npcId) };
+        try {
+          const extracted = await extractMemory(this.taskCtx(playerId, attemptId), { quest, npcDef: getNPC(p.npcId), sceneCtx: { ...sceneCtx, npc: own }, turns, playerName: state.displayName });
+          own.memory = mergeMemory(own.memory, extracted.extraction, { questId: quest.id, attemptId, env: this.env });
+        } catch { own.memory = { ...own.memory, lastInteractionSummary: `I witnessed ${quest.title}: ${outcome.label}.`, lastInteractionAt: this.env.now() }; }
+        own.timesMet += 1;
+        return own;
+      }));
+      for (const own of others) { touchedNpcs[own.npcId] = own; if (!world.peopleMet.includes(own.npcId)) world.peopleMet.push(own.npcId); }
+    }
     if (touchedNpcs[npc.npcId]) touchedNpcs[npc.npcId].timesMet += 1;
+
+    // Narrative state is reduced from canonical evidence, then a proposal is validated.
+    // The provider has no reference to the database and cannot supply consequences.
+    if (!rehearsal) {
+      const signals: Record<string, number> = {};
+      for (const turn of turns.filter((t) => t.speaker === "player")) for (const signal of readPlayerUtterance(turn.text).signals) signals[signal] = (signals[signal] ?? 0) + 1;
+      const npcs = { ...state.npcs, ...touchedNpcs };
+      world = advanceContinuity({ world, competencies: comp.profile, npcs }, {
+        attemptId, questId: quest.id, npcId: npc.npcId, grade: outcome.grade, difficulty: quest.difficulty,
+        variant: this.pinnedProposal(row)?.variant ?? null, signals,
+        observations: evaluation.behaviors.filter((b) => isValidFacet(b.skill, b.facet)).map(({ skill, facet, score }) => ({ skill, facet, score })),
+      });
+      world = advanceCampaign(world, { quest, attemptId, outcomeId: outcome.id, grade: outcome.grade, label: outcome.label, setback: outcome.setback,
+        recoveryTarget: typeof row.hidden.target === "string" ? row.hidden.target : null, beforeSkills: state.competencies, skills: comp.profile, npcs });
+      for (const [index, consequence] of consequences.entries()) {
+        if (consequence.type !== "npc.memory.event" || consequence.npcId === quest.npcId || quest.ensemble?.participants.some((p) => p.npcId === consequence.npcId)) continue;
+        const factId = `authored:${attemptId}:${index}`;
+        world.campaign.information.push({ id: factId, ownerId: quest.npcId, visibility: "shared", audience: [], sourceAttemptId: attemptId, sourceQuestId: quest.id, summary: consequence.summary });
+        world = communicate(world, { id: `route:${factId}`, factId, from: quest.npcId, to: consequence.npcId, sourceAttemptId: attemptId, kind: consequence.emotionalTone === "positive" ? "recommendation" : "warning", reason: consequence.emotionalTone === "positive" ? `${getNPC(quest.npcId).shortName} spoke well of you to ${getNPC(consequence.npcId).shortName}.` : consequence.emotionalTone === "negative" ? `${getNPC(quest.npcId).shortName} told ${getNPC(consequence.npcId).shortName} it didn't go well.` : `${getNPC(quest.npcId).shortName} told ${getNPC(consequence.npcId).shortName} how it went.` });
+      }
+      // New communications become a recipient's memory only after an explicit authorized route.
+      for (const communication of world.campaign.communications.filter((c) => c.sourceAttemptId === attemptId)) {
+        if (communication.id.startsWith("route:authored:")) continue; // already applied as an authored memory consequence above
+        const fact = world.campaign.information.find((f) => f.id === communication.factId)!;
+        const recipient = touchedNpcs[communication.to] ?? { ...getOrCreateNpcState(state, communication.to) };
+        recipient.memory = { ...recipient.memory, events: [...recipient.memory.events, { id: communication.id, questId: quest.id, attemptId, summary: `${getNPC(communication.from).shortName} shared: ${fact.summary}`, importance: 0.7, emotionalTone: communication.kind === "recommendation" ? "positive" : "neutral", at: this.env.now() }] };
+        touchedNpcs[communication.to] = recipient;
+        npcs[communication.to] = recipient;
+      }
+      const ctx = { world, competencies: comp.profile, npcs };
+      const plan = await proposeNextEvent(this.taskCtx(playerId, attemptId), ctx);
+      world = applyDirectorPlan(ctx, plan);
+    }
 
     // 6. Build result & persist everything.
     const levelsBefore = (row.snapshotBefore.levels ?? {}) as Record<string, number>;
@@ -639,17 +786,30 @@ export class GameService {
       comparison: null,
       shareCard: buildShareCard(quest, sceneCtx, evaluation, comp.xpAwards, levelsBefore, state.competencies, comp.profile),
     };
+    if (!rehearsal && world.director.recommended?.template !== "curated" && world.director.recommended) {
+      result.aftermath.push(`${world.director.recommended.title}: ${world.director.recommended.whyNow}`);
+      result.rewards.followUpQuestIds = [...new Set([world.director.recommended.questId, ...result.rewards.followUpQuestIds])];
+    }
     if (mode !== "first") result.comparison = await this.compareWithPrevious(playerId, quest.id, attemptId, result, evaluation);
 
     // All persistent effects of the conclusion commit together, or not at all.
     const now = this.env.now();
-    await this.deps.db.transaction(async (tx) => {
-      const t = tx as unknown as Db;
-      if (!rehearsal) await saveWorldState(t, playerId, world);
-      await saveCompetencies(t, playerId, comp.profile);
-      for (const n of Object.values(touchedNpcs)) await saveNpcState(t, playerId, n);
-      await t.update(questAttempts).set({ status: "completed", scene, evaluation, result, endedAt: now, updatedAt: now }).where(eq(questAttempts.id, attemptId));
-    });
+    try {
+      await this.deps.db.transaction(async (tx) => {
+        const t = tx as unknown as Db;
+        const fresh = await t.query.worldStates.findFirst({ where: eq(worldStates.playerId, playerId) });
+        const owned = await t.query.questAttempts.findFirst({ where: eq(questAttempts.id, attemptId) });
+        if (owned?.status !== "evaluating" || owned.updatedAt !== evaluationClaimAt) throw new GameError("Another request is handling this debrief.", "conflict");
+        if (fresh?.version !== state.world.version) throw new GameError("Your story changed while this result was being prepared. Retry the debrief.", "conflict");
+        if (!rehearsal) await saveWorldState(t, playerId, world);
+        await saveCompetencies(t, playerId, comp.profile);
+        for (const n of Object.values(touchedNpcs)) await saveNpcState(t, playerId, n);
+        await t.update(questAttempts).set({ status: "completed", scene, evaluation, result, endedAt: now, updatedAt: now }).where(eq(questAttempts.id, attemptId));
+      });
+    } catch (err) {
+      if (err instanceof GameError && err.code === "conflict") await this.deps.db.update(questAttempts).set({ status: "active", updatedAt: this.env.now() }).where(and(eq(questAttempts.id, attemptId), eq(questAttempts.status, "evaluating"), eq(questAttempts.updatedAt, evaluationClaimAt)));
+      throw err;
+    }
 
     // 7. Events.
     const a = this.deps.analytics;
@@ -693,11 +853,49 @@ export class GameService {
   }
 
   /** The NPC as this attempt sees them: rehearsals replay against the NPC as they were at the canonical run. */
-  private npcForAttempt(row: { npcId: string; snapshotBefore: Record<string, unknown> }, state: PlayerState): NPCInstanceState {
-    const live = getOrCreateNpcState(state, row.npcId);
+  private npcForAttempt(row: { npcId: string; snapshotBefore: Record<string, unknown> }, state: PlayerState, participantId?: string): NPCInstanceState {
+    const id = participantId ?? row.npcId;
+    const live = getOrCreateNpcState(state, id);
+    const participant = (row.snapshotBefore.participants as Record<string, NPCInstanceState> | undefined)?.[id];
+    if (row.snapshotBefore.mode === "rehearsal" && participant) return structuredClone(participant);
+    if (id !== row.npcId) return live;
     const snap = row.snapshotBefore.npcState as { relationship: Relationship; memory: unknown } | undefined;
     if (row.snapshotBefore.mode === "rehearsal" && snap) return { ...live, relationship: snap.relationship, memory: NPCMemorySchema.parse(snap.memory) };
     return live;
+  }
+
+  private pinnedProposal(row: { snapshotBefore: Record<string, unknown> }): DirectorProposal | undefined {
+    const raw = row.snapshotBefore.directorProposal;
+    return raw ? DirectorProposalSchema.parse(raw) : undefined;
+  }
+
+  private worldForAttempt(row: { snapshotBefore: Record<string, unknown> }, state: PlayerState) {
+    return row.snapshotBefore.mode === "rehearsal" && row.snapshotBefore.world ? WorldStateSchema.parse(row.snapshotBefore.world) : state.world;
+  }
+
+  /** Authenticated commands call this; GET read models never spend tokens or change the story. */
+  async refreshDirector(playerId: string, preferences?: unknown) {
+    const parsed = preferences === undefined ? undefined : PreferencesSchema.safeParse(preferences);
+    if (parsed && !parsed.success) throw new GameError("Choose up to three supported goals and a valid upcoming focus.", "state");
+    const state = await loadPlayerState(this.deps.db, playerId);
+    const inFlight = await this.deps.db.query.questAttempts.findFirst({ where: and(eq(questAttempts.playerId, playerId), or(eq(questAttempts.status, "active"), eq(questAttempts.status, "evaluating"))) });
+    if (inFlight) throw new GameError("Finish or leave the current conversation before changing your next event.", "conflict");
+    if (!parsed && state.world.director.recommended) return state.world.director;
+    const world = reconcileCampaign(state.world);
+    if (parsed?.success) world.director.preferences = parsed.data;
+    const ctx = { ...state, world };
+    // Preference edits use the immediate deterministic planner; no model cost on every checkbox.
+    const plan = parsed ? planDirector(ctx) : await proposeNextEvent(this.taskCtx(playerId), ctx);
+    const next = applyDirectorPlan(ctx, plan);
+    next.version += 1;
+    await this.deps.db.transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const fresh = await t.query.worldStates.findFirst({ where: eq(worldStates.playerId, playerId) });
+      const active = await t.query.questAttempts.findFirst({ where: and(eq(questAttempts.playerId, playerId), or(eq(questAttempts.status, "active"), eq(questAttempts.status, "evaluating"))) });
+      if (fresh?.version !== state.world.version || active) throw new GameError("Your story changed. Try again after the current conversation.", "conflict");
+      await saveWorldState(t, playerId, next);
+    });
+    return next.director;
   }
 
   // ---------------------------------------------------------------- abandon
@@ -715,12 +913,13 @@ export class GameService {
 
   async getAttempt(playerId: string, attemptId: string): Promise<AttemptView> {
     const row = await this.requireAttempt(playerId, attemptId);
-    const quest = getQuest(row.questId);
+    const quest = getQuest(row.questId, this.pinnedProposal(row));
     const turns = await this.loadTurns(attemptId);
     const state = await loadPlayerState(this.deps.db, playerId);
     const npc = this.npcForAttempt(row, state);
-    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: row.scene, world: state.world, npc, playerName: state.displayName };
+    const sceneCtx: SceneContext<Record<string, unknown>, Record<string, unknown>> = { hidden: row.hidden, scene: row.scene, world: this.worldForAttempt(row, state), npc, playerName: state.displayName, difficulty: quest.difficulty };
     return {
+      directorProposal: this.pinnedProposal(row),
       id: row.id,
       questId: row.questId,
       npcId: row.npcId,
@@ -762,6 +961,7 @@ export class GameService {
       id: r.id,
       index: r.idx,
       speaker: r.speaker,
+      ...(r.identity ? { identity: r.identity } : {}),
       text: r.text,
       modality: r.modality,
       moves: r.moves ?? null,
@@ -777,10 +977,10 @@ export class GameService {
     text: string,
     modality: DialogueTurn["modality"],
     moves: DialogueTurn["moves"],
-    extra: { sceneBefore?: SceneState | null } = {},
+    extra: { sceneBefore?: SceneState | null; identity?: TurnIdentity } = {},
   ): Promise<DialogueTurn> {
-    const turn: DialogueTurn = { id: this.env.id(), index: idx, speaker, text, modality, moves, createdAt: this.env.now() };
-    await this.deps.db.insert(dialogueTurns).values({ id: turn.id, attemptId, idx, speaker, text, modality, moves, createdAt: turn.createdAt, sceneBefore: extra.sceneBefore ?? null });
+    const turn: DialogueTurn = { id: this.env.id(), index: idx, speaker, text, modality, moves, createdAt: this.env.now(), ...(extra.identity ? { identity: extra.identity } : {}) };
+    await this.deps.db.insert(dialogueTurns).values({ id: turn.id, attemptId, idx, speaker, text, modality, moves, identity: extra.identity ?? null, createdAt: turn.createdAt, sceneBefore: extra.sceneBefore ?? null });
     return turn;
   }
 }

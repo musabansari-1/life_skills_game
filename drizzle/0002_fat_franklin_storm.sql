@@ -1,0 +1,1 @@
+ALTER TABLE `dialogue_turns` ADD `identity` text;

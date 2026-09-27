@@ -36,6 +36,7 @@ import {
   TurnResponseSchema,
   TurnSpeechEventSchema,
   WorldOverviewSchema,
+  NarrativeViewSchema,
   type ApiErrorCode,
   type ClientAttempt,
   type Credentials,
@@ -43,6 +44,8 @@ import {
   type TurnRequest,
 } from "@/contracts/api";
 import { SSEParser } from "./sse";
+import type { DirectorState } from "@/engine/director/types";
+import type { TurnIdentity } from "@/engine/scene/ensemble";
 
 export class GameApiError extends Error {
   constructor(
@@ -64,6 +67,7 @@ export interface GameClientOptions {
 }
 
 export interface StreamTurnHandlers {
+  onSpeaker?: (identity: TurnIdentity) => void;
   /** Growing NPC speech (captions + sentence-chunked TTS). */
   onSpeech?: (speechSoFar: string, done: boolean) => void;
 }
@@ -102,6 +106,8 @@ export function createGameClient(opts: GameClientOptions) {
 
     // ---- reads
     world: () => request("GET", "/world", WorldOverviewSchema),
+    refreshDirector: () => request("POST", "/director", NarrativeViewSchema, {}),
+    saveGoals: (preferences: DirectorState["preferences"]) => request("PUT", "/director/goals", NarrativeViewSchema, preferences),
     quest: (questId: string) => request("GET", `/quests/${encodeURIComponent(questId)}`, QuestBriefingSchema),
     character: (npcId: string) => request("GET", `/characters/${encodeURIComponent(npcId)}`, DossierSchema),
     attempt: (attemptId: string) => request("GET", `/attempts/${encodeURIComponent(attemptId)}`, AttemptEnvelopeSchema),
@@ -109,8 +115,9 @@ export function createGameClient(opts: GameClientOptions) {
     result: (attemptId: string) => request("GET", `/attempts/${encodeURIComponent(attemptId)}/result`, DebriefSchema),
 
     // ---- scene
-    startQuest: (questId: string, modality: "voice" | "text" = "text") => request("POST", `/quests/${encodeURIComponent(questId)}/start`, AttemptEnvelopeSchema, { modality }),
+    startQuest: (questId: string, modality: "voice" | "text" = "text", mode: "story" | "practice" = "story") => request("POST", `/quests/${encodeURIComponent(questId)}/start`, AttemptEnvelopeSchema, { modality, mode }),
     abandon: (attemptId: string) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/abandon`, AckSchema, {}),
+    react: (attemptId: string, expectedTurnCount: number) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/react`, AttemptEnvelopeSchema, { expectedTurnCount }),
     /** Can take 10-120 s (evaluation + memory). Show a waiting state; safe to retry (idempotent once completed). */
     conclude: (attemptId: string) => request("POST", `/attempts/${encodeURIComponent(attemptId)}/conclude`, ConcludeResponseSchema, {}),
     trackShare: (questId: string) => request("POST", "/events/share", AckSchema, { questId }),
@@ -193,6 +200,7 @@ export function createGameClient(opts: GameClientOptions) {
           const data = JSON.parse(ev.data);
           if (ev.event === "speech") {
             const s = TurnSpeechEventSchema.parse(data);
+            if (s.identity) handlers.onSpeaker?.(s.identity);
             handlers.onSpeech?.(s.text, s.done);
           } else if (ev.event === "result") {
             result = ClientAttemptSchema.parse(data);
@@ -219,7 +227,7 @@ function consumeSSE(text: string, handlers: StreamTurnHandlers): ClientAttempt {
   let result: ClientAttempt | null = null;
   for (const ev of [...parser.push(text), ...parser.end()]) {
     const data = JSON.parse(ev.data);
-    if (ev.event === "speech") handlers.onSpeech?.(data.text, data.done);
+    if (ev.event === "speech") { if (data.identity) handlers.onSpeaker?.(data.identity); handlers.onSpeech?.(data.text, data.done); }
     else if (ev.event === "result") result = ClientAttemptSchema.parse(data);
     else if (ev.event === "error") {
       const e = ApiErrorSchema.parse(data);

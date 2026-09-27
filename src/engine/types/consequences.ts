@@ -31,7 +31,7 @@ export const ConsequenceSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("world.commitment.resolve"),
     commitmentId: z.string(),
-    status: z.enum(["fulfilled", "broken"]),
+    status: z.enum(["fulfilled", "broken", "superseded"]),
   }),
   z.object({ type: z.literal("world.decision.add"), description: z.string() }),
   z.object({

@@ -34,6 +34,8 @@ export const hiringManagerInterview = defineQuest<Hidden, Scene>({
   difficulty: 2,
   skills: ["storytelling", "confidence", "communication", "listening"],
   order: 20,
+  pacing: { category: "challenge", intensity: 3, emotionalPressure: 3, importance: 4, urgency: "normal" },
+  transition: () => ({ when: "Three days later", message: "Nova Labs, fourteenth floor. Rohan is running late, and mentions it twice." }),
   briefing: {
     situation: "Emma put you forward. Rohan Mehta runs the platform team you'd join: ex-staff engineer, eighteen months into managing, visibly short on time. Thirty minutes in a glass meeting room.",
     objective: "Show Rohan you're someone he can rely on, and leave with an offer.",

@@ -21,6 +21,8 @@ import type { AnyQuestDefinition, SceneContext } from "@/engine/types/quest";
 import { describeRelationship } from "@/engine/relationships";
 import { renderMemoryBlock } from "@/engine/memory";
 import { genericDirectorNotes } from "@/engine/scene";
+import { relationshipGameplay } from "@/engine/director/continuity";
+import { informationFor } from "@/engine/campaign/information";
 import { extractStreamingSpeech, parseNpcTurn, MOVES_CLOSE, MOVES_OPEN, SPEECH_CLOSE, SPEECH_OPEN } from "../format";
 import { logged, recentTurnsAsMessages, type TaskContext } from "./shared";
 
@@ -88,13 +90,22 @@ You value: ${p.values.join("; ")}.
 You dislike: ${p.dislikes.join("; ")}.
 How you speak: ${p.speakingStyle}
 When your patience runs low: ${p.underPressure}
-Your goals in general: ${npcDef.goals.join("; ")}.
+Your goals in general: ${npcDef.goals.join("; ")}.${p.manner ? `
+Your rhythm: ${p.manner.rhythm}
+When you disagree: ${p.manner.disagreement}
+When you approve: ${p.manner.approval}
+What earns your trust: ${p.manner.trustBuilders}
+What loses it: ${p.manner.trustBreakers}${p.manner.ambiguity ? `
+With ambiguity: ${p.manner.ambiguity}` : ""}${p.manner.decisions ? `
+How you decide: ${p.manner.decisions}` : ""}${p.manner.byRelationship ? `
+With this relationship in mind: ${p.manner.byRelationship}` : ""}` : ""}
 
 # Your relationship with ${playerName}
 ${relationship}
 
 # What you remember
 ${memory}
+${informationFor(sceneCtx.world, npcDef.id).map((f) => `Known through ${f.visibility} information: ${f.summary}`).join("\n")}
 
 # The situation right now
 ${quest.scene.npcSituation(sceneCtx)}
@@ -141,7 +152,7 @@ ${proposals}
 /** Per-turn system text: current hidden values, what's revealed, and the deterministic direction for this turn. */
 export function buildNpcVolatilePrompt(input: NpcTurnInput): string {
   const { quest, sceneCtx, playerName } = input;
-  const director = [...genericDirectorNotes(sceneCtx.scene, quest.scene.minTurns, quest.scene.maxTurns, sceneCtx.difficulty), ...quest.scene.director(sceneCtx)];
+  const director = [...genericDirectorNotes(sceneCtx.scene, quest.scene.minTurns, quest.scene.maxTurns, sceneCtx.difficulty), ...quest.scene.director(sceneCtx), ...relationshipGameplay(sceneCtx.npc, sceneCtx.world).notes];
   const revealed = sceneCtx.scene.revealed.length ? sceneCtx.scene.revealed.join(", ") : "(nothing yet)";
   const opening = input.opening
     ? "- Open naturally in two or three sentences. If you have history with them, let it show in one small, natural reference, not a recap."

@@ -13,9 +13,21 @@
  *  - Every route under /api/v1 returns one of these shapes, or ApiError.
  */
 import { z } from "zod";
+import { PreferencesSchema } from "@/engine/director/types";
+
+export const NarrativeViewSchema = z.object({
+  recommendation: z.object({ questId: z.string(), title: z.string(), summary: z.string(), whyNow: z.string(), npcName: z.string(), eventType: z.string(), difficulty: z.number(), focus: z.array(z.string()), history: z.array(z.string()), approved: z.boolean() }).nullable(),
+  preferences: PreferencesSchema,
+  threads: z.array(z.object({ id: z.string(), title: z.string(), status: z.enum(["pending", "ready", "resolved"]), stage: z.string(), explanation: z.string(), sourceAttemptId: z.string(), sourceTitle: z.string(), resolution: z.string().nullable() })),
+  reputation: z.array(z.string()),
+  techniques: z.array(z.object({ id: z.string(), title: z.string(), hint: z.string(), stage: z.enum(["learning", "discovered", "reliable"]) })),
+});
+export type NarrativeView = z.infer<typeof NarrativeViewSchema>;
 import { EvaluationSchema } from "@/engine/types/evaluation";
 import { QuestRewardsSchema } from "@/engine/types/quest";
 import { RelationshipSchema } from "@/engine/types/npc";
+import { TurnIdentitySchema } from "@/engine/scene/ensemble";
+import { EndingSchema } from "@/engine/campaign/types";
 import { SkillIdSchema } from "@/engine/types/skills";
 
 export const API_VERSION = "v1" as const;
@@ -85,6 +97,8 @@ export const QuestCardSchema = z.object({
   difficulty: z.number().int(),
   skills: z.array(SkillIdSchema),
   availability: z.enum(["available", "locked", "completed", "replayable"]),
+  /** What kind of scene this is on the map (additive, v1): a story chapter, a boss, a repair, a Director event or an optional scene. */
+  kind: z.enum(["main", "boss", "recovery", "event", "optional"]).optional(),
   unmet: z.array(z.string()),
   lastOutcomeId: z.string().nullable(),
   isNext: z.boolean(),
@@ -131,6 +145,13 @@ export const ActiveAttemptRefSchema = z.object({
 
 /** GET /world — everything the home/map screen needs in one call. */
 export const WorldOverviewSchema = z.object({
+  advancedCampaign: z.object({
+    acts: z.array(z.object({ id: z.string(), title: z.string(), subtitle: z.string().optional(), completed: z.number(), total: z.number(), state: z.string() })),
+    ending: EndingSchema.nullable(),
+    setbacks: z.array(z.object({ id: z.string(), summary: z.string(), kind: z.string(), sourceAttemptId: z.string(), recoveryQuestId: z.string().nullable(), recovered: z.boolean() })),
+    communications: z.array(z.object({ id: z.string(), from: z.string(), to: z.string(), reason: z.string() })),
+  }).optional(),
+  narrative: NarrativeViewSchema.optional(),
   player: PlayerIdentitySchema,
   career: CareerSummarySchema,
   worlds: z.array(WorldCardSchema),
@@ -143,7 +164,10 @@ export const WorldOverviewSchema = z.object({
   campaign: z
     .object({
       title: z.string(),
-      chapters: z.array(z.object({ questId: z.string(), label: z.string(), state: z.enum(["done", "current", "locked"]) })),
+      chapters: z.array(z.object({ questId: z.string(), label: z.string(), actId: z.string().optional(), state: z.enum(["done", "current", "locked"]) })),
+      /** Act-level progress (additive, v1). */
+      acts: z.array(z.object({ id: z.string(), title: z.string(), subtitle: z.string(), state: z.enum(["done", "current", "locked"]), completed: z.number().int(), total: z.number().int() })).optional(),
+      currentAct: z.object({ id: z.string(), title: z.string(), subtitle: z.string(), index: z.number().int() }).nullable().optional(),
       completed: z.number().int(),
       total: z.number().int(),
       currentQuestId: z.string().nullable(),
@@ -151,6 +175,10 @@ export const WorldOverviewSchema = z.object({
     })
     .nullable()
     .default(null),
+  /** The next story chapter, framed for the home screen (additive, v1). */
+  nextUp: z.object({ questId: z.string(), title: z.string(), tagline: z.string(), npcId: z.string(), npcName: z.string(), transition: z.object({ when: z.string(), message: z.string() }).nullable(), kind: z.enum(["main", "boss", "recovery", "event", "optional"]), act: z.object({ index: z.number().int(), title: z.string() }).nullable() }).nullable().optional(),
+  /** "Your story so far": meaningful moments only, oldest first, each linked to its debrief (additive, v1). */
+  recap: z.array(z.object({ label: z.string(), attemptId: z.string().nullable(), questId: z.string() })).optional(),
   /** Recent decisions, newest first: the player's story so far. */
   story: z.array(z.string()).default([]),
   /** Monotonic world-state version; clients can skip re-rendering when unchanged. */
@@ -161,6 +189,7 @@ export type WorldOverview = z.infer<typeof WorldOverviewSchema>;
 // ---------------------------------------------------------------- NPC dossier
 
 export const DossierSchema = z.object({
+  arc: z.object({ stage: z.string(), context: z.string(), milestones: z.array(z.object({ questId: z.string(), attemptId: z.string(), summary: z.string() })), favors: z.array(z.string()), disappointments: z.array(z.string()) }).nullable().default(null),
   id: z.string(),
   name: z.string(),
   shortName: z.string(),
@@ -186,6 +215,7 @@ export type Dossier = z.infer<typeof DossierSchema>;
 // ---------------------------------------------------------------- quest briefing
 
 export const QuestBriefingSchema = z.object({
+  boss: z.object({ stakes: z.string(), approaches: z.array(z.string()) }).nullable().default(null),
   id: z.string(),
   title: z.string(),
   tagline: z.string(),
@@ -205,6 +235,12 @@ export const QuestBriefingSchema = z.object({
   replayMode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),
   /** Position in the campaign, if the quest is a chapter. */
   chapter: z.object({ index: z.number().int(), total: z.number().int(), title: z.string() }).nullable().default(null),
+  /** Narrative stamp ("Two days later — Rohan wants to talk.") (additive, v1). */
+  transition: z.object({ when: z.string(), message: z.string() }).nullable().optional(),
+  /** The act this chapter belongs to, if it is a story chapter (additive, v1). */
+  act: z.object({ index: z.number().int(), title: z.string() }).nullable().optional(),
+  /** Scene kind, matching the map (additive, v1). */
+  kind: z.enum(["main", "boss", "recovery", "event", "optional"]).optional(),
 });
 export type QuestBriefingView = z.infer<typeof QuestBriefingSchema>;
 
@@ -219,6 +255,7 @@ export const VoiceProfileSchema = z.object({
 });
 
 export const ClientTurnSchema = z.object({
+  identity: TurnIdentitySchema.optional(),
   id: z.string(),
   index: z.number().int(),
   speaker: z.enum(["player", "npc", "system"]),
@@ -231,6 +268,7 @@ export type ClientTurn = z.infer<typeof ClientTurnSchema>;
 
 /** What a client may know about a live scene. Hidden NPC state never appears here. */
 export const ClientAttemptSchema = z.object({
+  reactionAvailable: z.boolean().optional(),
   id: z.string(),
   questId: z.string(),
   npcId: z.string(),
@@ -249,6 +287,7 @@ export type ClientAttempt = z.infer<typeof ClientAttemptSchema>;
 
 /** Static scene framing a client needs to render the conversation screen. */
 export const SceneInfoSchema = z.object({
+  participants: z.array(z.object({ id: z.string(), name: z.string(), shortName: z.string(), role: z.string(), organisation: z.string(), appearance: z.object({ hue: z.number(), initials: z.string() }), voice: VoiceProfileSchema })).optional(),
   quest: z.object({ id: z.string(), title: z.string(), objective: z.string(), locationName: z.string(), minTurns: z.number().int() }),
   npc: z.object({
     id: z.string(),
@@ -279,6 +318,7 @@ export const AckSchema = z.object({ ok: z.literal(true) });
 export const ConcludeResponseSchema = z.object({ attemptId: z.string(), status: z.enum(["active", "evaluating", "completed", "abandoned"]) });
 
 export const StartQuestRequestSchema = z.object({
+  mode: z.enum(["story", "practice"]).default("story"),
   modality: z.enum(["voice", "text"]).default("text"),
 });
 
@@ -292,6 +332,7 @@ export const DeliveryReportSchema = z.object({
   turnIndex: z.number().int().min(0),
   heardText: z.string().max(4000),
 });
+export const ReactionRequestSchema = z.object({ expectedTurnCount: z.number().int().min(1) }).strict();
 export type DeliveryReport = z.infer<typeof DeliveryReportSchema>;
 
 export const TurnRequestSchema = z.object({
@@ -325,13 +366,14 @@ export type TurnResponse = z.infer<typeof TurnResponseSchema>;
  *   event: result  data: ClientAttempt      (once, at the end)
  *   event: error   data: ApiError           (instead of result)
  */
-export const TurnSpeechEventSchema = z.object({ text: z.string(), done: z.boolean() });
+export const TurnSpeechEventSchema = z.object({ text: z.string(), done: z.boolean(), identity: TurnIdentitySchema.optional() });
 export type TurnSpeechEvent = z.infer<typeof TurnSpeechEventSchema>;
 
 // ---------------------------------------------------------------- results
 
 /** GET /attempts/:id/result — the debrief. Only available once status is "completed". */
 export const DebriefSchema = z.object({
+  campaignEnding: EndingSchema.nullable().optional(),
   attemptId: z.string(),
   quest: z.object({ id: z.string(), title: z.string() }),
   npc: z.object({ id: z.string(), name: z.string(), shortName: z.string(), appearance: z.object({ hue: z.number(), initials: z.string() }) }),
@@ -353,7 +395,7 @@ export const DebriefSchema = z.object({
   skillLabels: z.record(z.string(), z.string()),
   /** Player's own lines, keyed by turn index, so key moments can quote them. */
   playerTurnTexts: z.record(z.string(), z.string()),
-  nextQuest: z.object({ id: z.string(), title: z.string(), tagline: z.string(), npcName: z.string(), isFollowUp: z.boolean() }).nullable(),
+  nextQuest: z.object({ id: z.string(), title: z.string(), tagline: z.string(), npcName: z.string(), isFollowUp: z.boolean(), transition: z.object({ when: z.string(), message: z.string() }).nullable().optional(), kind: z.enum(["main", "boss", "recovery", "event", "optional"]).optional() }).nullable(),
   /** Forward-looking consequences ("Emma will remember you pushed hard."). */
   aftermath: z.array(z.string()).default([]),
   mode: z.enum(["first", "second_chance", "rehearsal"]).default("first"),

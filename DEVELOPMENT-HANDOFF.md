@@ -1,8 +1,8 @@
 # Development Handoff
 
-This phase built the architecture, the core systems, and one end-to-end vertical slice (**The Counter Offer**). This document tells the next engineer/model how to continue without damaging the foundations.
+Counterpart V1 is a complete single-world game: **Career City, season one**. It has 13 milestone chapters in six acts (Get in → Prove yourself → Consequences → Step up → The crisis → Resolution), three bosses (The Counter Offer, The Meridian Call, The Project Crisis), Director-selected events and optional scenes between chapters, seven authored recoveries, and a personalized ending that freezes after **The Review**. That is 27 encounter opportunities in all. This document tells the next engineer or model how to continue without damaging the foundations.
 
-Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. The client/API boundary for web + future native apps is in `MOBILE-ARCHITECTURE.md`. The latest product review (what was weak, what changed, remaining UX issues, voice and latency) is `PRODUCT-QUALITY-REVIEW.md`.
+Reading order: `ARCHITECTURE.md` → **`V1-CONTENT-ARCHITECTURE.md`** (the campaign map and its rules) → `ADVANCED-CAMPAIGN-ARCHITECTURE.md` (systems: multi-NPC, bosses, failure/recovery, information, pacing, endings) → `docs/ADDING-CONTENT.md` (recipes) → `MOBILE-ARCHITECTURE.md` (client/API boundary). What was built in V1, how it was tested, and the exact closed-beta task list are in **`V1-CONTENT-REVIEW.md`**.
 
 ## Run it
 
@@ -10,7 +10,14 @@ Read `ARCHITECTURE.md` first. Content recipes are in `docs/ADDING-CONTENT.md`. T
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 191 unit + integration tests, no model calls
+pnpm test                         # 257 unit + integration tests (incl. nine full simulated seasons), no model calls
+pnpm simulate:campaign -- --summary   # nine personas play Career City end to end; prints path, ending, identity
+npx tsx --env-file=.env.local scripts/v1-live-playtest.ts [ids]   # live-model playtest of the V1 scenes (natural paraphrases)
+pnpm test:semantic-live           # production-model semantic paraphrase corpus + p50/p90/p95 latency (CORPUS_LIMIT=N for a cheap probe)
+# Browser QA against a production server with the isolated QA DB + fake provider (see script headers):
+#   DATABASE_URL=file:./data/campaign-qa.db AI_PROVIDER=fake SESSION_SECRET=<32+ chars> npx next start -p 3012
+#   (same env) npx tsx scripts/e2e-v1.ts        # new player → mid-season → Boss 2 in the UI → strong/weak endings, desktop + 390px
+#   (same env) npx tsx scripts/e2e-campaign.ts  # crisis multi-NPC, reactions, reload identity, failure→recovery UI
 pnpm smoke                        # full loop against the configured provider, in-memory DB
 pnpm smoke aggressive             # the hostile path
 npx tsx scripts/e2e-walkthrough.ts   # Playwright UI walkthrough using local Chrome (dev server must be running)
@@ -21,7 +28,9 @@ npx tsx scripts/conversation-scenarios.ts [names]   # 10 realtime scenarios (int
 npx tsx scripts/e2e-scene-smoke.ts   # browser check of the conversation screen (voice-mode UI, interruption, captions); dev server must be running
 ```
 
-Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `claude-opus-5`), or `AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY` + `AI_MODEL=<slug>`. `AI_PROVIDER=fake` runs the whole game deterministically with heuristics — good for UI work.
+Providers: set `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` (default model `claude-opus-5`), or `AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY` + `AI_MODEL=<slug>`. `AI_PROVIDER=fake` runs the whole game deterministically with heuristics, which is good for UI work. Scripts run with `tsx` must pass `--env-file=.env.local`, because `src/lib/env` parses at import time.
+
+> **As of 2026-09-26 the model in `.env.local` (`deepseek/deepseek-v4-flash-0731:free`) returns HTTP 404 on OpenRouter ("unavailable for free").** With that config every semantic turn fails. The V1 live playtest used `nvidia/nemotron-3-super-120b-a12b:free` via a process-level `AI_MODEL` override. Set the intended production model before any playtest.
 
 Verified in this phase:
 - Full loop with the fake provider (tests + Playwright walkthrough: sign up → onboarding → map → briefing → scene → results → follow-up → dossier).
@@ -45,7 +54,7 @@ Verified in this phase:
 9. **Every persistent change emits an event.** Use `analytics.track` (DB + console) — it is also the game's history.
 10. **Clients talk to the game only through `/api/v1` and `src/contracts/api.ts`.** No game rule runs on a client. Web pages may call `server/queries.ts` directly (same DTOs). Contract changes within v1 are additive only.
 12. **Rules decide before the NPC speaks; speech is binding.** Quest `preTurn` computes what the NPC may do from `readPlayerUtterance`; what the NPC says out loud (read by `inferMovesFromSpeech`) is what gets recorded. Don't reintroduce silent post-speech clamping.
-13. **Failure grade = progress blocked.** Replays of resolved quests are rehearsals (no world effects); replays of failed ones are second chances (become canon).
+13. **Failure is canon; replays are practice.** A failed early milestone blocks progress and opens a separate recovery conversation; later milestones continue on failure (see V1 invariants). Replaying any quest is practice: skills grow, the world keeps what happened.
 14. **Only what was heard is canon.** NPC speech passes the quest's `speechGate` before it is streamed; an interrupted line is truncated to the heard prefix and the scene re-derived from it. Never store, evaluate or remember text the player didn't hear. `generatedText` on a turn is diagnostics only.
 15. **Voice logic lives in `ConversationController`.** Keep React, DOM and network out of it; platform adapters implement `SpeechRecognizer` / `SpeechSynthesizer` / `ConversationTransport`.
 11. **Mutations must be retry-safe.** Turns use `expectedTurnCount`; conclude is claimed atomically and commits in one transaction. Keep it that way for any new mutating endpoint.
@@ -72,8 +81,8 @@ Verified in this phase:
 **Product-critical**
 1. **Manual voice QA in Chrome with a mic.** Check: mic permission prompt, interim transcript, barge-in while Emma is speaking, TTS voice selection on Windows/macOS/Android, Space push-to-talk. Tune `preferredVoiceHints` per NPC. Consider a server TTS (ElevenLabs/OpenAI) behind `SpeechSynthesizer` for quality — the interface is ready.
 2. **Latency.** With `claude-opus-5` at `effort: "low"` NPC turns should be ~2–4 s to first sentence. If too slow, route `npc_turn` to `claude-sonnet-5` via `AI_MODEL_NPC` and keep evaluation on Opus. Consider prompt caching: the system prompt is marked `cache_control` but changes each turn because director notes are embedded; move volatile director notes into the last user message to get cache hits.
-3. **Quest recommendation** (`recommend` task exists as a name only). `deriveInsight` gives strengths/weaknesses; build a deterministic recommender first (weak facet → quests whose rubric targets it), LLM later.
-4. **Commitment follow-through.** `world.commitments` are recorded (Push Back on a Deadline creates one). Nothing yet resolves them or builds a quest around a broken promise. Add a quest with `prerequisites: [{type:"custom", check: ctx => ctx.world.commitments.some(c => c.status==="open" && c.toNpcId==="rohan_mehta")}]` and a `world.commitment.resolve` consequence.
+3. **Production semantic acceptance.** The Director and personalized recommendation system are now implemented. Before beta, run `pnpm test:semantic-live` on the intended production model and investigate every game-critical false positive/negative plus the measured 8-second scene-read timeout rate.
+4. **Full human/phone validation.** Commitment follow-through is now part of the campaign and Director. What remains is one complete 13-chapter human voice run plus physical-phone microphone/barge-in testing; see `V1-BETA-READINESS.md`.
 
 **Robustness**
 5. ~~Concluding a quest without a transaction~~ — done: atomic claim + single transaction (see `MOBILE-ARCHITECTURE.md` §9). Remaining: make conclude an async job for mobile (see its Fable escalation note).
@@ -87,9 +96,17 @@ Verified in this phase:
 11. Scene: show the transcript inline as faded prior lines on large screens; add keyboard hints only on first use.
 12. Settings/account screens (password change, delete account, voice preferences) — routine.
 
-**Content**
-13. Only 4 quests exist. The engine supports branching, prerequisites, hidden objectives, world-state inputs and follow-ups; add quests per `docs/ADDING-CONTENT.md`. Keep each quest's `outcomes` ordered with a catch-all last.
-14. Influence Arena has no quests yet (world is open on the map). Either add one or set it `locked`.
+**Content (V1 complete; see `V1-CONTENT-REVIEW.md` §12 and §17)**
+13. Career City season one is content-complete: 13 milestones, 3 bosses, 5 optional/Director scenes, 2 personalized templates, 7 recoveries. Add content per `docs/ADDING-CONTENT.md` and the V1 kit (`src/content/quests/kit.ts`); never insert a milestone without updating `CAREER_ACTS` and the season simulation.
+14. ~~Influence Arena has no quests~~: it is now the locked *Negotiation Arena* (a future-world hook).
+15. Known weak spots: *Sunday at the Bakery* now has a post-Meridian Director reason for players who know Priya; the checkpoint and introduction templates still predate `manner`; the crisis partial is still recorded as a setback and should be reclassified only if playtest evidence says it feels punitive.
+
+**V1 invariants (in addition to the list above)**
+- The season ending freezes only when `FINAL_MILESTONE` (`the_review`) concludes canonically. The crisis hands off to it.
+- Milestones in `CONTINUES_ON_FAILURE` resolve on failure (the failure is the authored continuation). Earlier milestones block on failure and open a separate recovery.
+- A partial is a campaign setback only if the outcome declares `setback`, or the quest declares `failure` and the outcome leaves `setback` undefined.
+- Repairs of a chapter the story has moved past close when the following chapter resolves. The setback stays in history.
+- Semantic-encounter disclosures are authored lines delivered through `canonicalSpeech` and recorded only if heard (`kit.disclose` / `kit.revealsFrom`). They fire from *fresh* evidence only (`kit.trackFresh`).
 
 ## Trade-offs made
 

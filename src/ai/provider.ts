@@ -16,6 +16,8 @@ export interface ChatMessage {
 }
 
 export interface CompletionRequest {
+  /** Optional task deadline/cancellation. Not serialized into prompts or provider payloads. */
+  signal?: AbortSignal;
   /** Stable system prompt. Providers may cache it. */
   system: string;
   /**

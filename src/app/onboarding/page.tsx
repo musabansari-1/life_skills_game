@@ -24,10 +24,10 @@ export default async function OnboardingPage() {
         </div>
         <div className="mt-10 border-t border-line pt-6 text-sm text-paper-3 space-y-2">
           <p>
-            <span className="text-paper-2">Where you start:</span> Career City. You have just received a job offer from Nova Labs.
+            <span className="text-paper-2">Where you start:</span> Career City. You have applied to Nova Labs, and your first call with their recruiter is booked.
           </p>
           <p>
-            <span className="text-paper-2">How you play:</span> speak. Text works too, but the game is built for your voice.
+            <span className="text-paper-2">How you play:</span> speak. Text works too. People remember what you say, and your story keeps it. Practice runs never change it.
           </p>
         </div>
       </div>

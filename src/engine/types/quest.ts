@@ -19,6 +19,9 @@ import type { SkillId } from "./skills";
 import type { WorldState } from "./world";
 import type { CompetencyProfile } from "./skills";
 import type { PlayerRead } from "../parsing/player";
+import type { BossEncounterProfile } from "../scene/boss";
+import type { FailureKind, PacingProfile } from "../campaign/types";
+import type { EnsembleProfile, SemanticFeature } from "../scene/ensemble";
 
 // ---------- Prerequisites ----------
 
@@ -74,8 +77,10 @@ export interface SceneContext<H, S> {
 export type SpeechCheck = { ok: true } | { ok: false; reason: string; rewrite: string | null };
 
 export interface QuestScene<H, S> {
+  /** Authored, binding disclosures. Used only when precise delivered facts matter to a scene gate. */
+  canonicalSpeech?: (ctx: SceneContext<H, S>) => string | null;
   /** Instantiate hidden NPC state for this attempt. May vary by world state / relationship. */
-  createHidden: (ctx: { world: WorldState; npc: NPCInstanceState }) => H;
+  createHidden: (ctx: { world: WorldState; npc: NPCInstanceState; competencies?: CompetencyProfile }) => H;
   /** Initial quest-specific scene state, derived from hidden state. */
   createCustom: (hidden: H) => S;
   /** Initial patience (0-100). Lower = tougher. */
@@ -160,6 +165,13 @@ export interface OutcomeBranch<H, S> {
   followUpQuestIds?: string[];
   /** Forward-looking consequences shown to the player ("Emma will remember you pushed hard."). */
   aftermath?: (ctx: OutcomeContext<H, S>) => string[];
+  /**
+   * Campaign setback recorded for this outcome. `failure` grades are always
+   * recorded. A `partial` is recorded only when this is set, or when it is
+   * undefined and the quest declares `failure` (a meaningful partial, like
+   * agreeing an unsafe date). `false` records nothing.
+   */
+  setback?: FailureKind | false;
 }
 
 // ---------- Rewards ----------
@@ -183,6 +195,12 @@ export interface QuestBriefing {
 }
 
 export interface QuestDefinition<H = Record<string, unknown>, S = Record<string, unknown>> {
+  pacing?: PacingProfile;
+  ensemble?: EnsembleProfile;
+  semanticFeatures?: SemanticFeature[];
+  failure?: { kind: FailureKind; recoveryQuestId?: string };
+  recovery?: { target: (world: WorldState) => string | null };
+  boss?: BossEncounterProfile;
   id: string;
   title: string;
   tagline: string;
@@ -209,6 +227,11 @@ export interface QuestDefinition<H = Record<string, unknown>, S = Record<string,
    * this quest ("Emma remembers you said nine lakh would do."). Pure.
    */
   carryOver?: (ctx: PrerequisiteContext) => string[];
+  /**
+   * A short narrative stamp for the briefing and the "what happens next" card:
+   * { when: "Two days later", message: "Rohan wants to talk." }. Pure; may read history.
+   */
+  transition?: (ctx: PrerequisiteContext) => { when: string; message: string } | null;
 }
 
 /** Type-erased quest for registries. Use `defineQuest` to author. */

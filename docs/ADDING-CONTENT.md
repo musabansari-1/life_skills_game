@@ -74,15 +74,25 @@ The shape:
 
 `world.career.set`, `world.var.set`, `world.flag.add/remove`, `world.reputation.delta`, `world.unlock.world/location/quest`, `world.commitment.add/resolve`, `world.decision.add`, `world.opportunity.add`, `world.person.met`, `relationship.delta`, `npc.memory.event`. See `src/engine/types/consequences.ts`.
 
-### Grades and replays
+### Grades, setbacks and replays
 
-- `failure` means **progress is blocked** (offer withdrawn, not put forward). Replaying a failed quest is a *second chance* whose outcome becomes canon.
-- A bad-but-consequential choice (caving to a deadline, playing an incident down) is `partial`, not `failure`: the story continues and the consequence plays out later.
-- Replaying a resolved quest is a *rehearsal*: it starts from the NPC's state at the canonical run, awards skill updates at half XP, and never applies consequences again. The result shows a comparison with the previous run.
+- `failure` on an early milestone means **progress is blocked** (offer withdrawn, not put forward); a separate recovery quest (`recovery.ts`) repairs what happens next without rewriting the failure. Milestones in `CONTINUES_ON_FAILURE` (Meridian onward) resolve on failure: the failure is the authored continuation.
+- A bad-but-consequential choice (caving to a deadline, playing an incident down, promising an unscoped dashboard) is `partial`, not `failure`: the story continues and the consequence plays out later.
+- `OutcomeBranch.setback` decides whether a partial is listed as a campaign setback (`"commitment_failure"`, `"relationship_damage"`…) or not (`false`). Texture (an awkward first day) should be `false`.
+- Replaying any quest is *practice*: it starts from the NPC's state at the canonical run, awards skill updates at half XP, and never applies consequences again. The result shows a comparison with the previous run.
 
 ### Campaign
 
-Chapters are listed in `src/content/campaign.ts`. A chapter counts as done after a non-failed completion. Keep chapters connected: each should read at least one thing an earlier chapter wrote (a `world.var`, flag, commitment or NPC memory) and write at least one thing a later chapter reads.
+Acts and milestones live in `CAREER_ACTS` (`src/engine/campaign/index.ts`); `src/content/campaign.ts` derives the player-facing chapter list from it. Each milestone's prerequisites must include `milestoneAllowed(world, id)`. Keep chapters connected: each should read at least one thing an earlier chapter wrote (a `world.var`, flag, commitment or NPC memory) and write at least one thing a later chapter reads. See `V1-CONTENT-ARCHITECTURE.md` for the full map.
+
+### V1 authoring conventions
+
+- **`transition`**: every milestone has one (`{ when: "Ten days later", message: "Nora has pulled you into a call with Meridian." }`). It appears on the briefing, the home screen and the previous result's "what happens next".
+- **`pacing`**: give every quest a `PacingProfile`. Side scenes use `urgency: "optional"`; consequence events use `"consequence"`.
+- **Semantic encounters** (`src/content/quests/kit.ts`): describe behaviour in `semanticFeatures`; call `trackFresh(scene)` at the top of `preTurn`; deliver facts that gate progress with `canonicalSpeech: ({ scene }) => disclose(scene, key, fresh(scene, "the_question"), LINE)` and record them with `inferMovesFromSpeech: (s) => ({ reveal: revealsFrom(s, { key: LINE }) })`; give the NPC a `beat(...)` each turn; add `SCENE_KIT` to `evaluatorNotes`; drop `accepted_terms` so "okay" can't end the scene. Add offline regexes for new feature ids to `FakeProvider.sceneMeaning` so tests can drive them.
+- **Voice**: new recurring NPCs need `personality.manner` (rhythm, disagreement, approval, trust builders/breakers). Write disclosure lines in that voice.
+- **Ending prose**: a meaningful new decision gets a `MOMENTS` rule and, for a new recurring character, a `CHARACTER_OUTCOMES` row in `src/content/ending.ts`.
+- **Tests**: add branch tests to `src/server/v1-content.test.ts` and, if the scene is a milestone, a line for every persona in `SCRIPTS` (`src/server/campaign-simulation.ts`).
 
 ### Making earlier quests matter
 

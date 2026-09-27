@@ -47,6 +47,12 @@ export default async function CharacterPage({ params }: PageProps<"/characters/[
 
         <div className="mt-8 grid md:grid-cols-[1fr_280px] gap-6">
           <div className="space-y-6">
+            {d.arc && <section className="card p-5 border-brass/30">
+              <p className="eyebrow text-brass">{d.arc.stage.replace(/_/g, " ")}</p>
+              <p className="text-paper-2 mt-2 leading-relaxed">{d.arc.context}</p>
+              {d.arc.favors.map((favor) => <p key={favor} className="text-sm text-paper-2 mt-3">{favor}</p>)}
+              {d.arc.disappointments.length > 0 && <details className="mt-3 text-sm"><summary className="text-paper-3 cursor-pointer">What still needs repairing</summary>{d.arc.disappointments.map((line, i) => <p key={i} className="mt-2 text-paper-2">{line}</p>)}</details>}
+            </section>}
             <section className="card p-5">
               <p className="eyebrow mb-2">Public dossier</p>
               <p className="text-paper-2 leading-relaxed">{npc.publicDossier}</p>

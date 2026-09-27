@@ -10,11 +10,11 @@ export function StartQuestButton({ questId, npcName, replayMode = "first" }: { q
   const [error, setError] = useState<string | null>(null);
   const api = useMemo(() => createGameClient({ baseUrl: "" }), []);
 
-  async function start(modality: "voice" | "text") {
+  async function start(modality: "voice" | "text", mode: "story" | "practice" = "story") {
     setPending(modality);
     setError(null);
     try {
-      const { attempt } = await api.startQuest(questId, modality);
+      const { attempt } = await api.startQuest(questId, modality, mode);
       router.push(`/play/${attempt.id}?mode=${modality}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start the scene.");
@@ -26,13 +26,14 @@ export function StartQuestButton({ questId, npcName, replayMode = "first" }: { q
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => start("voice")} disabled={pending !== null} className="btn btn-primary">
-          {pending === "voice" ? `${npcName} is picking up…` : replayMode === "rehearsal" ? "Rehearse the scene" : replayMode === "second_chance" ? "Ask for a second chance" : "Enter the scene"}
+          {pending === "voice" ? `${npcName} is picking up…` : replayMode === "rehearsal" ? "Rehearse the scene" : replayMode === "second_chance" ? "Try the repair again" : "Enter the scene"}
           {pending !== "voice" && <MicIcon />}
         </button>
         <button type="button" onClick={() => start("text")} disabled={pending !== null} className="btn btn-ghost">
           {pending === "text" ? "Entering…" : "Text only"}
         </button>
       </div>
+      {replayMode !== "rehearsal" && <button type="button" onClick={() => start("voice", "practice")} disabled={pending !== null} className="btn btn-quiet self-start text-xs">Practice first · skills grow, story stays</button>}
       {error && (
         <p role="alert" className="text-sm text-warn">
           {error}

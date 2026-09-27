@@ -53,7 +53,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async complete(req: CompletionRequest): Promise<CompletionResult> {
     try {
-      const res = await this.client.messages.create(this.buildParams(req));
+      const res = await this.client.messages.create(this.buildParams(req), { signal: req.signal });
       return this.toResult(res);
     } catch (err) {
       throw this.wrap(err);
@@ -62,7 +62,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async stream(req: CompletionRequest, onDelta: (delta: string) => void): Promise<CompletionResult> {
     try {
-      const stream = this.client.messages.stream(this.buildParams(req));
+      const stream = this.client.messages.stream(this.buildParams(req), { signal: req.signal });
       for await (const event of stream) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           onDelta(event.delta.text);

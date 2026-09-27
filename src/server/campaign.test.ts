@@ -1,7 +1,7 @@
 /**
  * The connected campaign: "this world remembers me".
  *
- * Plays the six Nova Labs chapters twice with different choices (fake AI
+ * Plays Acts 1 and 2 of Career City twice with different choices (fake AI
  * provider, in-memory DB) and asserts that earlier choices change later
  * chapters: hidden NPC limits, what NPCs are told, what the briefing shows,
  * which situation the finale is in, and how relationships end up.
@@ -98,6 +98,11 @@ describe("Nova Labs campaign", () => {
     // 4. First day.
     await play(game, "first_day_nova_labs", ["Morning Emma! Who will I be reporting to?", "What's the team struggling with right now?"]);
 
+    // 4b. Asking Maya to do the work gets a link and a closed door, remembered later.
+    const m = await play(game, "meet_maya", ["Can you just do my migration ticket? I don't get any of it.", "Could you just finish it for me?"]);
+    expect(m.result!.outcomeId).toBe("brushed_off");
+    expect((await questBriefing(game, playerId, "push_back_on_deadline")).carryOver.join(" ")).toMatch(/Maya didn't offer/);
+
     // 5. Deadline: cave to Friday. Rohan remembers the week-one promise.
     const deadline = await game.startQuest(playerId, "push_back_on_deadline");
     expect(deadline.hidden.overpromised).toBe(true);
@@ -108,6 +113,13 @@ describe("Nova Labs campaign", () => {
     expect(d.result!.outcomeId).toBe("capitulated");
     world = (await loadPlayerState(db, playerId)).world;
     expect(world.flags).toContain("nova_labs.rushed_migration");
+
+    // 5b. Nora: a confident dashboard estimate before asking why becomes a commitment.
+    expect((await questBriefing(game, playerId, "status_update")).canStart).toBe(false);
+    const n = await play(game, "nora_requirements", ["Yes, we can build the real-time dashboard by Friday, no problem.", "Two weeks, tops."]);
+    expect(n.result!.outcomeId).toBe("promised_dashboard");
+    world = (await loadPlayerState(db, playerId)).world;
+    expect(world.commitments.some((c) => c.toNpcId === "nora_shah" && /dashboards/.test(c.description))).toBe(true);
 
     // 6. Status update: caving produced a production incident; playing it down costs Rohan's trust.
     const upd = await questBriefing(game, playerId, "status_update");
@@ -122,7 +134,14 @@ describe("Nova Labs campaign", () => {
     expect(end.npcs.rohan_mehta.relationship.trust).toBeLessThan(trustBefore);
     expect(end.npcs.rohan_mehta.memory.events.some((e) => /minor\. It wasn't/.test(e.summary))).toBe(true);
     expect(end.world.flags).toContain("chapter1.complete");
-    expect(campaignProgress(end.world).finished).toBe(true);
+    const progress = campaignProgress(end.world);
+    expect(progress.finished).toBe(false);
+    expect(progress.currentQuestId).toBe("customer_escalation");
+    // Act 3 reads Act 2: the Meridian call knows about the hidden incident and the dashboard.
+    const call = await questBriefing(game, playerId, "customer_escalation");
+    expect(call.carryOver.join(" ")).toMatch(/found the broken records before anyone at Nova told him/);
+    expect(call.carryOver.join(" ")).toMatch(/dashboard is coming/);
+    expect(call.boss?.stakes).toMatch(/renewal/);
   });
 
   it("path B — keeping your number, a plan, and owning the slip lead somewhere else", async () => {
@@ -146,6 +165,10 @@ describe("Nova Labs campaign", () => {
     await game.submitPlayerTurn(playerId, offer.id, "Okay, I accept.", "text");
     await game.concludeQuest(playerId, offer.id);
     await play(game, "first_day_nova_labs", ["Morning Emma! Who will I be reporting to?"]);
+    const m = await play(game, "meet_maya", ["I've read the runner README and traced one batch. I'm stuck on exactly where rollback is triggered. Do you have ten minutes after your run?", "Has the rollback been tested on real data?"]);
+    expect(m.result!.outcomeId).toBe("ally");
+    expect((await loadPlayerState(db, playerId)).world.flags).toContain("knows.rollback_untested");
+    expect((await questBriefing(game, playerId, "push_back_on_deadline")).carryOver.join(" ")).toMatch(/never run against production-sized data/);
 
     // Deadline: propose a plan; Rohan (scripted) agrees Monday.
     const agreeing = service(sayer("Fine, Monday it is, with the partial on Friday. Don't make me regret it."));
@@ -156,6 +179,9 @@ describe("Nova Labs campaign", () => {
     expect(d.result!.outcomeId).toBe("plan_agreed");
     world = (await loadPlayerState(db, playerId)).world;
     expect(world.flags).not.toContain("nova_labs.rushed_migration");
+    const n = await play(game, "nora_requirements", ["Before I estimate, what problem are they trying to solve? Who uses it?", "So their real problem is the manual export at month-end. A scheduled export refresh before the thirtieth, instead of a dashboard?"]);
+    expect(n.result!.outcomeId).toBe("found_the_need");
+    expect((await loadPlayerState(db, playerId)).npcs.vikram_rao.memory.events.some((e) => /asked what my team actually needed/.test(e.summary))).toBe(true);
 
     // Status update: a different situation, owned properly.
     const brief = await questBriefing(game, playerId, "status_update");
@@ -207,7 +233,7 @@ describe("replays", () => {
     expect(after.competencies.negotiation.xp).toBeGreaterThan(xpAfterCanon); // practice still counts
   });
 
-  it("after a failure, the replay is a second chance that becomes canon, and the NPC remembers the first try", async () => {
+  it("after a failure, replay is practice; a separate recovery changes the future without rewriting failure", async () => {
     await atOffer();
     const insults = ["This offer is an insult, take it or leave it.", "Unacceptable. Non-negotiable. Final offer.", "You're wasting my time. Final offer.", "Take it or leave it."];
     const first = await play(game, "counter_offer", insults);
@@ -216,14 +242,20 @@ describe("replays", () => {
     expect(st.world.career.status).toBe("exploring");
 
     const again = await game.startQuest(playerId, "counter_offer");
-    expect(again.mode).toBe("second_chance");
-    expect(fake.calls.filter((c) => c.task === "npc_opening").at(-1)!.system).toMatch(/withdrew the offer/);
+    const failedWorld = structuredClone(st.world);
+    expect(again.mode).toBe("rehearsal");
     await game.submitPlayerTurn(playerId, again.id, "I'm sorry about last time. Okay, I accept.", "text");
     const done = await game.concludeQuest(playerId, again.id);
-    expect(done.result!.mode).toBe("second_chance");
+    expect(done.result!.mode).toBe("rehearsal");
     expect(done.result!.comparison!.previousOutcomeLabel).toBe("Offer withdrawn");
     st = await loadPlayerState(db, playerId);
+    expect(st.world).toEqual(failedWorld);
+    const recovery = await play(game, "recovery_counter_offer", ["I own my mistake in how I handled that conversation.", "I'll send a revised plan and review it tomorrow at noon. I will accept the original terms."]);
+    expect(recovery.result!.grade).toBe("success");
+    st = await loadPlayerState(db, playerId);
     expect(st.world.career.status).toBe("employed");
-    expect(st.world.completedQuests.some((q) => q.questId === "counter_offer")).toBe(true);
+    expect(st.world.completedQuests.some((q) => q.questId === "counter_offer")).toBe(false);
+    expect(st.world.failedQuests.some((q) => q.attemptId === first.id)).toBe(true);
+    expect(st.world.campaign.failures.find((f) => f.attemptId === first.id)?.recoveredBy).toBe(recovery.id);
   });
 });

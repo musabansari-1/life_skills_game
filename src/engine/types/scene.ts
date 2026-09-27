@@ -7,6 +7,7 @@
  * what makes "different strategies produce different outcomes" testable.
  */
 import { z } from "zod";
+import { TurnIdentitySchema } from "../scene/ensemble";
 
 /**
  * Shared vocabulary of things an NPC can notice about a player's turn.
@@ -105,6 +106,7 @@ export type NPCTurn = z.infer<typeof NPCTurnSchema>;
 // ---------- Dialogue ----------
 
 export const DialogueTurnSchema = z.object({
+  identity: TurnIdentitySchema.optional(),
   id: z.string(),
   index: z.number().int().min(0),
   speaker: z.enum(["player", "npc", "system"]),

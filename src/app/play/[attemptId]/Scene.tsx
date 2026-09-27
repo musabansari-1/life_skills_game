@@ -21,6 +21,7 @@ interface SceneProps {
   initial: ClientAttempt;
   quest: { id: string; title: string; objective: string; locationName: string; minTurns: number };
   npc: { id: string; name: string; shortName: string; role: string; organisation: string; appearance: { hue: number; initials: string }; voice: VoiceProfile };
+  participants?: SceneProps["npc"][];
   playerName: string;
   initialMode: "voice" | "text";
   chapter?: { index: number; total: number } | null;
@@ -43,7 +44,12 @@ const CONCLUDE_STEPS: { stage: string; label: (npc: string) => string }[] = [
   { stage: "applying", label: () => "Updating your world" },
 ];
 
-export function Scene({ initial, quest, npc, playerName, initialMode, chapter }: SceneProps) {
+export function Scene({ initial, quest, npc: leadNpc, participants, playerName, initialMode, chapter }: SceneProps) {
+  const [npc, setSpeaker] = useState(() => participants?.find((p) => p.id === initial.turns.at(-1)?.identity?.npcId) ?? leadNpc);
+  const speakerRef = useRef(npc);
+  const reactionBusyRef = useRef(false);
+  const speakReactionRef = useRef<((text: string, index: number) => Promise<void>) | null>(null);
+  const [reactionBusy, setReactionBusy] = useState(false);
   const router = useRouter();
   const [attempt, setAttempt] = useState<ClientAttempt>(initial);
   const [caption] = useState<string>(initial.turns.filter((t) => t.speaker === "npc").at(-1)?.text ?? "");
@@ -75,6 +81,8 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
    * they cut in before it, it never shows at all).
    */
   const pendingStatusRef = useRef<ClientAttempt | null>(null);
+  const attemptRef = useRef(initial);
+  useEffect(() => { attemptRef.current = attempt; }, [attempt]);
   const flashStatus = useCallback((prev: ClientAttempt, next: ClientAttempt) => {
     const prevVals = new Map(prev.visibleStatus.map((s) => [s.label, s.value]));
     const diffs: Record<string, string> = {};
@@ -128,7 +136,10 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
       const expectedTurnCount = turnsRef.current;
       setAttempt((a) => ({ ...a, turns: [...a.turns, { id: `tmp_${Date.now()}`, index: a.turns.length, speaker: "player", text: playerText }] }));
       try {
-        const next = await api.streamTurn(attempt.id, { text: playerText, modality, expectedTurnCount, interrupted }, { onSpeech });
+        const next = await api.streamTurn(attempt.id, { text: playerText, modality, expectedTurnCount, interrupted }, { onSpeech, onSpeaker: (identity) => {
+          const selected = participants?.find((p) => p.id === identity.npcId);
+          if (selected) { speakerRef.current = selected; setSpeaker(selected); }
+        } });
         applyTurns(next);
         return lastNpcLine(next);
       } catch (err) {
@@ -150,7 +161,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
         throw err;
       }
     },
-    [api, attempt.id, applyTurns, applyAttemptNow],
+    [api, attempt.id, applyTurns, applyAttemptNow, participants],
   );
 
   /** The player cut Emma off and said nothing after: the server records what they heard. */
@@ -163,24 +174,45 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
   );
 
   const isClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
-  const voiceProviders = useMemo(() => (isClient ? createBrowserVoiceProviders() : { recognizer: null, synthesizer: new NullSpeechSynthesizer() }), [isClient]);
+  const voiceProviders = useMemo(() => {
+    const providers = isClient ? createBrowserVoiceProviders() : { recognizer: null, synthesizer: new NullSpeechSynthesizer() };
+    const synth = providers.synthesizer;
+    return { ...providers, synthesizer: { available: synth.available, prime: () => synth.prime(), cancel: () => synth.cancel(), speak: (text: string, _profile: VoiceProfile, options?: Parameters<typeof synth.speak>[2]) => synth.speak(text, speakerRef.current.voice, options) } };
+  }, [isClient]);
   const endedRef = useRef(false);
-  const shouldAutoListen = useCallback(() => !endedRef.current, []);
-  const voice = useVoiceSession({ profile: npc.voice, sendTurn, reportDelivery, textOnly: initialMode === "text", shouldAutoListen, onLineDelivered: applyStatus, ...voiceProviders });
+  const shouldAutoListen = useCallback(() => !endedRef.current && !reactionBusyRef.current, []);
+  const onLineDelivered = useCallback((line: NpcLine) => {
+    const delivered = pendingStatusRef.current ?? attemptRef.current;
+    applyStatus();
+    if (!delivered.reactionAvailable || delivered.turns.at(-1)?.index !== line.npcTurnIndex || reactionBusyRef.current) return;
+    reactionBusyRef.current = true; setReactionBusy(true);
+    void api.react(delivered.id, delivered.turns.length).then(async ({ attempt: next }) => {
+      if (next.turns.length <= delivered.turns.length) return;
+      const turn = next.turns.at(-1)!;
+      const selected = participants?.find((p) => p.id === turn.identity?.npcId);
+      if (selected) { speakerRef.current = selected; setSpeaker(selected); }
+      applyTurns(next);
+      reactionBusyRef.current = false; setReactionBusy(false);
+      await speakReactionRef.current?.(turn.text, turn.index);
+    }).catch((error) => { setNetError(error instanceof Error ? error.message : "The response could not be delivered."); })
+      .finally(() => { reactionBusyRef.current = false; setReactionBusy(false); });
+  }, [api, applyStatus, applyTurns, participants]);
+  const voice = useVoiceSession({ profile: npc.voice, sendTurn, reportDelivery, textOnly: initialMode === "text", shouldAutoListen, onLineDelivered, ...voiceProviders });
+  useEffect(() => { speakReactionRef.current = voice.speakLine; }, [voice.speakLine]);
 
   const ended = !!attempt.ended || attempt.status !== "active";
   useEffect(() => {
     endedRef.current = ended;
     if (ended && voice.state === "listening") voice.stopListening();
   }, [ended, voice]);
-  const busy = voice.state === "thinking";
+  const busy = voice.state === "thinking" || reactionBusy;
   const playerTurns = attempt.turns.filter((t) => t.speaker === "player").length;
   const canConclude = playerTurns > 0 && !busy && !concluding;
   const turnsLeft = Math.max(0, attempt.maxTurns - attempt.turnCount);
 
   const begin = () => {
     setBegan(true);
-    const opening = attempt.turns.find((t) => t.speaker === "npc");
+    const opening = attempt.turns.filter((t) => t.speaker === "npc").at(-1);
     if (opening && !voice.textOnly) void voice.speakLine(opening.text, opening.index);
   };
 
@@ -327,6 +359,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
           <Orb hue={npc.appearance.hue} initials={npc.appearance.initials} state={ended ? "idle" : orbState} size={132} />
           <div className="text-center">
             <p className="font-display text-2xl">{npc.name}</p>
+            {participants && <p className="text-xs text-paper-3 mt-1">In the room: {participants.map((p) => p.shortName).join(" · ")}</p>}
             <p className="text-xs text-paper-3">
               {npc.role}, {npc.organisation}
             </p>
@@ -448,7 +481,7 @@ export function Scene({ initial, quest, npc, playerName, initialMode, chapter }:
           <ol className="space-y-3">
             {attempt.turns.map((t) => (
               <li key={t.id} className={`text-sm leading-relaxed ${t.speaker === "player" ? "text-paper-2" : "text-paper"}`}>
-                <span className="eyebrow block mb-0.5">{t.speaker === "player" ? playerName : npc.shortName}</span>
+                <span className="eyebrow block mb-0.5">{t.speaker === "player" ? playerName : t.identity?.name ?? leadNpc.shortName}{t.identity && t.identity.addressedTo !== "player" ? ` → ${participants?.find((p) => p.id === t.identity?.addressedTo)?.shortName ?? t.identity.addressedTo}` : ""}</span>
                 {t.text}
                 {t.interrupted && <span className="text-paper-3 italic">{t.text ? "—" : "…"} (you cut in)</span>}
               </li>

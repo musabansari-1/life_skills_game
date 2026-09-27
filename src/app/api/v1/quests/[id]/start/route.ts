@@ -10,7 +10,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/v1/quests/[id]/
     const { id } = await ctx.params;
     const { game, player } = await requirePlayer();
     const body = await parseBody(req, StartQuestRequestSchema);
-    const attempt = await game.startQuest(player.playerId, id, body.modality);
+    const attempt = await game.startQuest(player.playerId, id, body.modality, body.mode);
     return ok(attemptEnvelope(attempt), { status: 201 });
   } catch (err) {
     return errorResponse(err);

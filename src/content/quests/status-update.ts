@@ -9,6 +9,7 @@
  * minimising it is the choice that sticks.
  */
 import { defineQuest } from "@/engine/types/quest";
+import { milestoneAllowed } from "@/engine/campaign";
 import type { WorldState } from "@/engine/types/world";
 
 type Situation = "incident" | "slip" | "unowned";
@@ -34,6 +35,7 @@ const IMPACT = /(\d+(\.\d+)?\s*(%|percent|records|accounts|customers|users|rows|
 const FIX = /\b(roll ?back|restore|backfill|re-?run|patch|fix|script|plan is|here'?s (the|my) plan|i'?ll (have|get|ship|send|fix|finish|restore)|by (tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|eod|end of (day|week)|noon|\d{1,2}\s?(am|pm)))\b/;
 
 function situationOf(world: WorldState): Situation {
+  if (world.flags.includes("director.deadline_replanned")) return "slip";
   if (world.flags.includes("nova_labs.rushed_migration")) return "incident";
   if (world.commitments.some((c) => c.toNpcId === "rohan_mehta" && c.status === "open" && /migration/i.test(c.description))) return "slip";
   return "unowned";
@@ -60,6 +62,7 @@ const SITUATIONS: Record<Situation, { briefing: string; impact: string; rohanKno
 
 export const statusUpdate = defineQuest<Hidden, Scene>({
   id: "status_update",
+  failure: { kind: "relationship_damage", recoveryQuestId: "recovery_status_update" },
   title: "The Status Update",
   tagline: "Something went wrong. Rohan needs to hear it from you.",
   worldId: "career_city",
@@ -68,21 +71,29 @@ export const statusUpdate = defineQuest<Hidden, Scene>({
   difficulty: 3,
   skills: ["confidence", "communication", "conflict_resolution", "leadership"],
   order: 60,
+  pacing: { category: "consequence", intensity: 3, emotionalPressure: 4, importance: 5, urgency: "consequence" },
   briefing: {
     situation: "What happens here depends on what you agreed with Rohan about the migration deadline.",
     objective: "Tell Rohan the truth, with the impact and a plan, before he hears it from someone else.",
     intel: ["Rohan hates surprises more than he hates bad news.", "He has a director asking him questions too."],
     hint: "Lead with the impact. Then the plan. Then what you'll do differently.",
   },
-  prerequisites: [{ type: "world_unlocked_quest", questId: "status_update" }],
+  prerequisites: [{ type: "world_unlocked_quest", questId: "status_update" }, { type: "custom", label: "Nora needs her answer first.", check: ({ world }) => milestoneAllowed(world, "status_update") }],
   carryOver: ({ world, npcs }) => {
     const s = situationOf(world);
     const lines = [SITUATIONS[s].briefing];
     if (world.flags.includes("interview.overpromised")) lines.push("In your interview you promised Rohan you'd be shipping in week one. He hasn't forgotten.");
     if (world.flags.includes("interview.blamed_others")) lines.push("Rohan watched you blame others in your interview. He's waiting to see if you do it again.");
     if ((npcs.rohan_mehta?.relationship.trust ?? 0) >= 15) lines.push("Rohan trusts you. That buys you a hearing, not a pass.");
+    if (s === "incident" && world.flags.includes("knows.rollback_untested")) lines.push("Maya warned you the rollback had never run on real data. You shipped anyway.");
+    if (s === "incident" && world.flags.includes("maya.collaborator")) lines.push("Maya has already started the restore. She didn't wait to be asked.");
     return lines;
   },
+  transition: ({ world }) => world.flags.includes("nova_labs.rushed_migration") && !world.flags.includes("director.deadline_replanned")
+    ? { when: "Saturday morning", message: "About two percent of customer records didn't migrate. Rohan is at his desk." }
+    : world.flags.includes("director.deadline_replanned") || world.commitments.some((c) => c.toNpcId === "rohan_mehta" && c.status === "open")
+      ? { when: "Tuesday night", message: "An edge case in the rollback path. The full migration will be a day late." }
+      : { when: "Thursday", message: "Rohan's director wants a date. Nobody owns one." },
   objectives: [
     { id: "own_it", label: "Own it", kind: "primary", description: "The player clearly owned their part.", check: (s) => (s.custom as Scene).admitted && !(s.custom as Scene).blamed },
     { id: "state_impact", label: "State the impact plainly", kind: "hidden", description: "The player gave the real size of the problem, with numbers.", check: (s) => (s.custom as Scene).gaveImpact && !(s.custom as Scene).minimized },

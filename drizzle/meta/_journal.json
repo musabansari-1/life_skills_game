@@ -15,6 +15,13 @@
       "when": 1789748065627,
       "tag": "0001_fluffy_sinister_six",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790096719361,
+      "tag": "0002_fat_franklin_storm",
+      "breakpoints": true
     }
   ]
 }

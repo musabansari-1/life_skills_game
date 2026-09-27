@@ -22,6 +22,8 @@ export const introduceYourself = defineQuest<Hidden, Scene>({
   difficulty: 1,
   skills: ["communication", "storytelling", "listening"],
   order: 1,
+  pacing: { category: "low_pressure", intensity: 1, emotionalPressure: 1, importance: 2, urgency: "optional" },
+  transition: () => ({ when: "Moving week", message: "The lift at Lakeview Apartments. Someone from 4B is holding the door." }),
   briefing: {
     situation: "You moved into Lakeview Apartments last week. In the lift this morning: Priya from 4B, coffee in hand, clearly on her way somewhere.",
     objective: "Make a genuine first impression and learn something about her.",

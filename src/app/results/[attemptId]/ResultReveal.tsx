@@ -9,6 +9,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Orb } from "@/components/Orb";
+import { NPCS } from "@/content/npcs";
 import type { Debrief } from "@/contracts/api";
 import { createGameClient } from "@/client/gameClient";
 
@@ -17,7 +18,7 @@ interface Props {
   debrief: Debrief;
 }
 
-const GRADE_COPY = { success: "Mission complete", partial: "Mission resolved", failure: "Mission failed" } as const;
+const GRADE_COPY = { success: "It landed", partial: "Partly your way", failure: "It didn't go your way" } as const;
 const REL_LABEL: Record<string, string> = { trust: "Trust", respect: "Respect", warmth: "Warmth", familiarity: "Familiarity" };
 
 export function ResultReveal({ debrief }: Props) {
@@ -44,7 +45,9 @@ export function ResultReveal({ debrief }: Props) {
         .map((k) => ({ k, d: Math.round(((rel.after[k] ?? 0) - (rel.before[k] ?? 0)) * 10) / 10 }))
         .filter((x) => x.d !== 0 && (x.k !== "familiarity" || Math.abs(x.d) >= 1))
     : [];
-  const otherRel = d.rewards.relationshipChanges.filter((r) => r.npcId !== npc.id);
+  const deltasOf = (r: (typeof d.rewards.relationshipChanges)[number]) => (["trust", "respect", "warmth"] as const)
+    .map((k) => ({ k, d: Math.round(((r.after[k] ?? 0) - (r.before[k] ?? 0)) * 10) / 10 })).filter((x) => x.d !== 0);
+  const otherRel = d.rewards.relationshipChanges.filter((r) => r.npcId !== npc.id && NPCS[r.npcId] && deltasOf(r).length > 0);
   const maxXp = Math.max(1, ...d.rewards.xp.map((x) => x.xp));
 
   async function share() {
@@ -73,12 +76,19 @@ export function ResultReveal({ debrief }: Props) {
         <p className="text-paper-2 mt-5 max-w-xl mx-auto leading-relaxed">{d.narrative}</p>
         {d.mode !== "first" && (
           <p className="mt-4 inline-block text-xs px-3 py-1.5 rounded-full border border-brass/40 text-brass-2">
-            {d.mode === "rehearsal" ? "Rehearsal: your skills improved; the world keeps what really happened." : "Second chance: this is now what happened."}
+            {d.mode === "rehearsal" ? "Rehearsal: your skills improved; the world keeps what really happened." : "A further recovery conversation. Earlier outcomes remain part of your story."}
           </p>
         )}
       </section>
 
       {/* Replay comparison */}
+      {d.campaignEnding && <section className="card p-6 mt-8 border-brass/40 text-center">
+        <p className="eyebrow text-brass">Career City · Season complete</p>
+        <h2 className="font-display text-2xl mt-2">{d.campaignEnding.professional}</h2>
+        <p className="text-paper-2 mt-3">{d.campaignEnding.identity}</p>
+        <Link href="/world#career-city-ending" className="btn btn-primary mt-5">See the story you shaped</Link>
+        {d.campaignEnding.tease && <p className="text-sm text-paper-3 mt-4">{d.campaignEnding.tease.title}.</p>}
+      </section>}
       {d.comparison && (
         <section className={`mt-8 card p-5 ${show(2)}`}>
           <p className="eyebrow mb-3">Compared with last time</p>
@@ -135,7 +145,20 @@ export function ResultReveal({ debrief }: Props) {
             </div>
           )}
         </div>
-        {(otherRel.length > 0 || d.worldChanges.length > 0) && (
+        {otherRel.length > 0 && (
+          <ul className="mt-3 grid sm:grid-cols-2 gap-3">
+            {otherRel.map((r) => (
+              <li key={r.npcId} className="card p-4 flex items-center gap-3">
+                <Orb hue={NPCS[r.npcId].appearance.hue} initials={NPCS[r.npcId].appearance.initials} size={36} />
+                <div className="min-w-0 text-sm">
+                  <p className="text-paper">{NPCS[r.npcId].name}</p>
+                  <p>{deltasOf(r).map((x, i) => <span key={x.k} className={x.d > 0 ? "text-success" : "text-warn"}>{i > 0 && <span className="text-paper-3"> · </span>}{REL_LABEL[x.k]} {x.d > 0 ? "+" : ""}{x.d}</span>)}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {d.worldChanges.length > 0 && (
           <ul className="mt-4 flex flex-wrap justify-center gap-2">
             {d.worldChanges.map((c, i) => (
               <li key={i} className="text-xs px-3 py-1.5 rounded-full border border-line text-paper-2">
@@ -275,17 +298,25 @@ export function ResultReveal({ debrief }: Props) {
           {d.chapter?.finished ? (
             <>
               <p className="eyebrow text-brass">{d.chapter.title}</p>
-              <p className="font-display text-3xl mt-2">Chapter complete.</p>
-              <p className="text-paper-2 mt-2">Everyone at Nova Labs will remember how you got here. More districts open in the next chapter.</p>
+              <p className="font-display text-3xl mt-2">Season one is complete.</p>
+              <p className="text-paper-2 mt-2">Everyone at Nova Labs will remember how you got here. Your ending is waiting on the map.</p>
               <div className="mt-6 flex flex-wrap gap-2">
-                <Link href="/world" className="btn btn-primary">
-                  Back to the city
+                <Link href="/world#career-city-ending" className="btn btn-primary">
+                  See your ending
                 </Link>
               </div>
             </>
           ) : nextQuest ? (
             <>
-              <p className="eyebrow text-brass">{nextQuest.isFollowUp ? "Next in your story" : "Up next"}</p>
+              {nextQuest.transition ? (
+                <>
+                  <p className="text-xs tracking-[0.18em] uppercase text-brass">{nextQuest.transition.when}</p>
+                  <p className="text-paper-2 mt-1">{nextQuest.transition.message}</p>
+                  <p className="eyebrow mt-5">{nextQuest.kind === "boss" ? "A conversation that matters" : nextQuest.kind === "recovery" ? "A chance to repair" : nextQuest.kind === "event" || nextQuest.kind === "optional" ? "Waiting for you" : "Next in your story"}</p>
+                </>
+              ) : (
+                <p className="eyebrow text-brass">{nextQuest.isFollowUp ? "Next in your story" : "Up next"}</p>
+              )}
               <p className="font-display text-3xl mt-2">{nextQuest.title}</p>
               <p className="text-paper-2 italic mt-1">{nextQuest.tagline}</p>
               <p className="text-sm text-paper-3 mt-1">with {nextQuest.npcName}</p>
@@ -306,7 +337,7 @@ export function ResultReveal({ debrief }: Props) {
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
           <Link href={`/quests/${quest.id}`} className="text-paper-3 hover:text-paper-2">
-            {d.grade === "failure" ? "Ask for a second chance →" : "Rehearse this scene with a different approach →"}
+            {d.mode === "rehearsal" ? "Practise it again →" : "Practise this scene with a different approach (your story keeps what happened) →"}
           </Link>
           <button type="button" onClick={share} className="text-paper-3 hover:text-paper-2">
             {shared ? "Copied" : "Share result"}

@@ -99,7 +99,7 @@ export function renderTranscript(turns: DialogueTurn[], playerName: string, npcN
   return turns
     .filter((t) => t.speaker !== "system")
     .map((t) => {
-      const who = t.speaker === "player" ? playerName : npcName;
+      const who = t.speaker === "player" ? playerName : t.identity?.name ?? npcName;
       const other = t.speaker === "player" ? npcName : playerName;
       return `[${t.index}] ${who}: ${t.text}${t.interrupted ? `— [${other} cut in here; the rest was never said]` : ""}`;
     })
@@ -114,7 +114,7 @@ export function renderTranscript(turns: DialogueTurn[], playerName: string, npcN
 export function recentTurnsAsMessages(turns: DialogueTurn[], window = 14): CompletionRequest["messages"] {
   const recent = turns.filter((t) => t.speaker !== "system").slice(-window);
   return recent.map((t, i) => {
-    if (t.speaker === "npc") return { role: "assistant" as const, content: t.interrupted ? `${t.text || "…"}—` : t.text || "…" };
+    if (t.speaker === "npc") return { role: "assistant" as const, content: `${t.identity ? `[${t.identity.name} to ${t.identity.addressedTo}]: ` : ""}${t.interrupted ? `${t.text || "…"}—` : t.text || "…"}` };
     const prev = recent[i - 1];
     return { role: "user" as const, content: prev?.speaker === "npc" && prev.interrupted ? `(cutting in) ${t.text}` : t.text };
   });

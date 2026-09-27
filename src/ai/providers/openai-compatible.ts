@@ -58,7 +58,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResult> {
-    const res = await this.fetchWithRetry(this.body(req, false));
+    const res = await this.fetchWithRetry(this.body(req, false), 2, req.signal);
     const json = (await res.json()) as {
       model?: string;
       choices?: { message?: { content?: string }; finish_reason?: string }[];
@@ -76,7 +76,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   async stream(req: CompletionRequest, onDelta: (delta: string) => void): Promise<CompletionResult> {
-    const res = await this.fetchWithRetry(this.body(req, true));
+    const res = await this.fetchWithRetry(this.body(req, true), 2, req.signal);
     if (!res.body) throw new AIProviderError("No response body", this.name, true);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -133,14 +133,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return { text: this.stripThinking(text), model, usage, stopReason };
   }
 
-  private async fetchWithRetry(body: unknown, attempts = 2): Promise<Response> {
+  private async fetchWithRetry(body: unknown, attempts = 2, signal?: AbortSignal): Promise<Response> {
     let lastErr: unknown;
     for (let i = 0; i < attempts; i++) {
+      signal?.throwIfAborted();
       try {
         const res = await fetch(`${this.opts.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: this.headers(),
           body: JSON.stringify(body),
+          signal,
         });
         if (res.ok) return res;
         const txt = await res.text().catch(() => "");
@@ -148,6 +150,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         lastErr = new AIProviderError(`HTTP ${res.status}: ${txt.slice(0, 300)}`, this.name, retryable);
         if (!retryable) throw lastErr;
       } catch (err) {
+        signal?.throwIfAborted();
         if (err instanceof AIProviderError && !err.retryable) throw err;
         lastErr = err instanceof AIProviderError ? err : new AIProviderError((err as Error).message, this.name, true, err);
       }

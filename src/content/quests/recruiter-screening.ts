@@ -31,6 +31,8 @@ export const recruiterScreening = defineQuest<Hidden, Scene>({
   difficulty: 1,
   skills: ["communication", "storytelling", "negotiation"],
   order: 10,
+  pacing: { category: "progression", intensity: 1, emotionalPressure: 2, importance: 3, urgency: "normal" },
+  transition: () => ({ when: "Monday, 11:00", message: "Your first call with Nova Labs. Emma dials in two minutes early." }),
   briefing: {
     situation: "You applied for a Platform Engineer role at Nova Labs. Emma, their Talent Partner, has booked a ten-minute screening call. She'll want to know who you are, why Nova Labs, and what you're looking for.",
     objective: "Get through to the hiring manager, and make Emma want to put you forward.",

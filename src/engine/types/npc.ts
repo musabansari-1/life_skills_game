@@ -36,6 +36,21 @@ export interface NPCPersonality {
   speakingStyle: string; // "short sentences, warm, occasionally blunt"
   /** Behavioural tells the model should use when patience runs low. */
   underPressure: string;
+  /**
+   * How this person sounds and decides, so they are recognisable without a
+   * name label. Rendered verbatim into the NPC prompt.
+   */
+  manner?: {
+    rhythm: string;
+    disagreement: string;
+    approval: string;
+    trustBuilders: string;
+    trustBreakers: string;
+    ambiguity?: string;
+    decisions?: string;
+    /** How they change with the relationship. */
+    byRelationship?: string;
+  };
 }
 
 export interface NPCDefinition {

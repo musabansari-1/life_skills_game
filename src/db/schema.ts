@@ -17,6 +17,7 @@ import type { CompetencyProfile } from "@/engine/types/skills";
 import type { NPCMoves, SceneState } from "@/engine/types/scene";
 import type { Evaluation } from "@/engine/types/evaluation";
 import type { QuestResult } from "@/engine/types/quest";
+import type { TurnIdentity } from "@/engine/scene/ensemble";
 
 export const users = sqliteTable(
   "users",
@@ -116,6 +117,7 @@ export const dialogueTurns = sqliteTable(
       .references(() => questAttempts.id, { onDelete: "cascade" }),
     idx: integer("idx").notNull(),
     speaker: text("speaker").$type<"player" | "npc" | "system">().notNull(),
+    identity: text("identity", { mode: "json" }).$type<TurnIdentity | null>(),
     text: text("text").notNull(),
     modality: text("modality").$type<"voice" | "text" | "generated">().notNull(),
     moves: text("moves", { mode: "json" }).$type<NPCMoves | null>(),

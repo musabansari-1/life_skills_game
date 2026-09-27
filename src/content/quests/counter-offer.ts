@@ -244,6 +244,18 @@ export const counterOffer = defineQuest<CounterOfferHidden, CounterOfferScene>({
   difficulty: 3,
   skills: ["negotiation", "persuasion", "confidence", "listening"],
   order: 30,
+  boss: {
+    id: "counter_offer",
+    stakes: "Your salary for years to come, and the first impression of the person who will vouch for you inside Nova Labs. Push too hard and the offer can disappear.",
+    combinedSkills: ["negotiation", "persuasion", "listening", "confidence"],
+    approaches: [
+      "Anchor with a number and a reason: evidence she can take to the hiring manager.",
+      "Ask what she can move before you argue about base. The flexible lever may not be the obvious one.",
+    ],
+    resistance: { opening: "Test whether they know what they want.", probing: "Hold the band; look for the lever that isn't base.", decision: "Close within your authority." },
+  },
+  pacing: { category: "boss", intensity: 4, emotionalPressure: 4, importance: 5, urgency: "normal" },
+  transition: ({ world }) => world.failedQuests.some((q) => q.questId === "counter_offer") ? null : ({ when: "Two days after the interview", message: "The offer letter arrived at 9pm. Emma wants to 'talk it through'." }),
   briefing: {
     situation:
       "Nova Labs made you an offer for the Platform Engineer role: ₹8.5L base, no joining bonus mentioned. Emma, their Talent Partner, has asked for a call to 'talk it through'.",

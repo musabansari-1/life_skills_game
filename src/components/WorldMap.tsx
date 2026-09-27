@@ -9,7 +9,7 @@ import type { WorldCard } from "@/contracts/api";
  * show quest markers; locked worlds are fogged. Selecting a world reveals its
  * quests in a side panel (or below on mobile).
  */
-export function WorldMap({ worlds, initialWorldId }: { worlds: WorldCard[]; initialWorldId?: string }) {
+export function WorldMap({ worlds, initialWorldId, currentQuestId = null }: { worlds: WorldCard[]; initialWorldId?: string; currentQuestId?: string | null }) {
   const [selectedId, setSelectedId] = useState<string>(initialWorldId ?? worlds.find((w) => w.availableCount > 0)?.id ?? worlds[0]?.id);
   const selected = worlds.find((w) => w.id === selectedId) ?? worlds[0];
 
@@ -85,33 +85,65 @@ export function WorldMap({ worlds, initialWorldId }: { worlds: WorldCard[]; init
             {selected.status === "locked" ? (
               <p className="text-sm text-paper-3 border-t border-line pt-4">Opens in a later season. The people here will have heard about you by then.</p>
             ) : (
-              <ul className="border-t border-line pt-4 space-y-2">
-                {selected.quests.length === 0 && <li className="text-sm text-paper-3">No quests here yet.</li>}
-                {selected.quests.map((q) => {
-                  const locked = q.availability === "locked";
-                  const inner = (
-                    <div className={`flex items-start gap-3 rounded-xl p-3 transition ${locked ? "opacity-60" : "hover:bg-white/5"}`}>
-                      <span className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: locked ? "transparent" : q.isNext || q.availability === "available" ? "var(--brass)" : "var(--paper-3)", border: locked ? "1px dashed var(--paper-3)" : "none" }} />
-                      <div className="min-w-0">
-                        <p className="text-sm text-paper flex items-center gap-2">
-                          <span className="truncate">{q.title}</span>
-                          {q.isNext && <span className="eyebrow text-brass">next</span>}
-                          {q.availability === "replayable" && <span className="eyebrow">replay</span>}
-                        </p>
-                        <p className="text-xs text-paper-3 mt-0.5">
-                          {q.npcName} · {q.locationName}
-                        </p>
-                        {locked && q.unmet[0] && <p className="text-xs text-paper-3 mt-1 italic">{q.unmet[0]}</p>}
-                      </div>
-                    </div>
-                  );
-                  return <li key={q.id}>{locked ? inner : <Link href={`/quests/${q.id}`}>{inner}</Link>}</li>;
-                })}
-              </ul>
+              <DistrictQuests quests={selected.quests} currentQuestId={currentQuestId} />
             )}
           </>
         )}
       </aside>
+    </div>
+  );
+}
+
+type Quest = WorldCard["quests"][number];
+const KIND_LABEL: Record<NonNullable<Quest["kind"]>, string> = { main: "Chapter", boss: "Boss", recovery: "Repair", event: "Event", optional: "Optional" };
+
+/** Now → waiting → behind you → later. Finished and locked chapters fold away so the list reads like a story, not a dashboard. */
+function DistrictQuests({ quests, currentQuestId }: { quests: Quest[]; currentQuestId: string | null }) {
+  if (quests.length === 0) return <p className="text-sm text-paper-3 border-t border-line pt-4">Nothing here yet.</p>;
+  const now = quests.filter((q) => q.id === currentQuestId && q.availability === "available");
+  const waiting = quests.filter((q) => q.availability === "available" && q.id !== currentQuestId);
+  const behind = quests.filter((q) => q.availability === "replayable" || q.availability === "completed");
+  const later = quests.filter((q) => q.availability === "locked");
+  return (
+    <div className="border-t border-line pt-4 space-y-4">
+      {now.length > 0 && <Group label="Now" quests={now} highlight />}
+      {waiting.length > 0 && <Group label={now.length ? "Also waiting" : "Waiting for you"} quests={waiting} />}
+      {behind.length > 0 && (
+        <details>
+          <summary className="eyebrow cursor-pointer">Behind you · {behind.length}</summary>
+          <p className="text-xs text-paper-3 mt-2">Replaying is practice: your skills improve, the story keeps what happened.</p>
+          <div className="mt-2"><Group quests={behind} /></div>
+        </details>
+      )}
+      {later.length > 0 && <p className="text-xs text-paper-3">{later.length} more {later.length === 1 ? "chapter" : "chapters"} later in the season.</p>}
+    </div>
+  );
+}
+
+function Group({ label, quests, highlight = false }: { label?: string; quests: Quest[]; highlight?: boolean }) {
+  return (
+    <div>
+      {label && <p className={`eyebrow mb-1 ${highlight ? "text-brass" : ""}`}>{label}</p>}
+      <ul className="space-y-1">
+        {quests.map((q) => {
+          const kind = q.kind ?? "optional";
+          const done = q.availability === "replayable" || q.availability === "completed";
+          return (
+            <li key={q.id}>
+              <Link href={`/quests/${q.id}`} className="flex items-start gap-3 rounded-xl p-2.5 -mx-2.5 transition hover:bg-white/5">
+                <span className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: done ? "var(--paper-3)" : kind === "recovery" ? "var(--warn)" : "var(--brass)", boxShadow: kind === "boss" && !done ? "0 0 0 3px rgba(201,166,107,0.25)" : "none" }} />
+                <span className="min-w-0">
+                  <span className="text-sm text-paper flex items-center gap-2 flex-wrap">
+                    <span>{q.title}</span>
+                    {!done && kind !== "main" && <span className={`text-[10px] tracking-widest uppercase ${kind === "boss" ? "text-brass" : kind === "recovery" ? "text-warn" : "text-paper-3"}`}>{KIND_LABEL[kind]}</span>}
+                  </span>
+                  <span className="block text-xs text-paper-3 mt-0.5">{q.npcName} · {q.locationName}</span>
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

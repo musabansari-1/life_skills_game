@@ -13,7 +13,18 @@ import { SKILLS, SKILL_IDS, type SkillId } from "@/engine/types/skills";
 import type { WorldState } from "@/engine/types/world";
 import { formatINR } from "@/engine/util";
 import { checkPrerequisites } from "@/engine/world";
+import { proposalForQuest } from "@/engine/director";
 import type { PlayerState } from "./player";
+import { CAREER_MILESTONES } from "@/engine/campaign";
+import type { AnyQuestDefinition } from "@/engine/types/quest";
+
+/** How a scene reads on the map: a story chapter, a boss, a repair, a Director event, or an optional scene. */
+export function questKind(q: AnyQuestDefinition): "main" | "boss" | "recovery" | "event" | "optional" {
+  if (q.recovery) return "recovery";
+  if (CAREER_MILESTONES.includes(q.id)) return q.boss ? "boss" : "main";
+  if (q.id.startsWith("director_") || q.pacing?.urgency === "consequence" || q.pacing?.category === "consequence") return "event";
+  return "optional";
+}
 
 export interface QuestCard {
   id: string;
@@ -28,6 +39,7 @@ export interface QuestCard {
   difficulty: number;
   skills: SkillId[];
   availability: "available" | "locked" | "completed" | "replayable";
+  kind: "main" | "boss" | "recovery" | "event" | "optional";
   unmet: string[];
   lastOutcomeId: string | null;
   /** True when this quest was unlocked/followed-up by the most recent completion. */
@@ -55,7 +67,8 @@ export function buildQuestCards(state: PlayerState): QuestCard[] {
     const outcome = lastQuest.outcomes.find((o) => o.id === last.outcomeId);
     for (const id of outcome?.followUpQuestIds ?? []) nextIds.add(id);
   }
-  return QUESTS.map((q) => {
+  return QUESTS.filter((q) => (!q.id.startsWith("director_") || !!proposalForQuest(state.world, q.id)) && (!q.recovery || !!q.recovery.target(state.world) || state.world.completedQuests.some((r) => r.questId === q.id))).map((base) => {
+    const q = findQuest(base.id, proposalForQuest(state.world, base.id))!;
     const prereq = checkPrerequisites(q.prerequisites, ctx);
     const completions = state.world.completedQuests.filter((c) => c.questId === q.id);
     const fails = state.world.failedQuests.filter((c) => c.questId === q.id);
@@ -64,8 +77,8 @@ export function buildQuestCards(state: PlayerState): QuestCard[] {
     const loc = LOCATIONS.find((l) => l.id === q.locationId);
     const lastRec = [...completions, ...fails].sort((a, b) => b.at.localeCompare(a.at))[0];
     let availability: QuestCard["availability"];
-    if (!prereq.ok) availability = "locked";
-    else if (done) availability = "replayable";
+    if (done) availability = q.recovery && !completions.length && prereq.ok ? "available" : "replayable";
+    else if (!prereq.ok) availability = "locked";
     else availability = "available";
     // Prerequisite messages reference quest ids; show titles to players.
     const unmet = prereq.unmet.map((u) => u.replace(/"([a-z0-9_]+)"/g, (_, id: string) => `"${findQuest(id)?.title ?? id}"`));
@@ -82,9 +95,10 @@ export function buildQuestCards(state: PlayerState): QuestCard[] {
       difficulty: q.difficulty,
       skills: q.skills,
       availability,
+      kind: questKind(q),
       unmet,
       lastOutcomeId: lastRec?.outcomeId ?? null,
-      isNext: nextIds.has(q.id) && !done,
+      isNext: (state.world.director.recommended?.questId === q.id || nextIds.has(q.id)) && !done,
     };
   });
 }
@@ -93,7 +107,7 @@ export function buildWorldCards(state: PlayerState): WorldCard[] {
   const quests = buildQuestCards(state);
   return WORLDS.map((w) => {
     const wq = quests.filter((q) => q.worldId === w.id);
-    return { ...w, quests: wq, availableCount: wq.filter((q) => q.availability === "available").length };
+    return { ...w, status: state.world.unlockedWorlds.includes(w.id) ? "open" : "locked", quests: wq, availableCount: wq.filter((q) => q.availability === "available").length };
   });
 }
 

@@ -29,7 +29,7 @@ export function createProviderFromEnv(): LLMProvider {
     npc_opening: env.AI_MODEL_NPC,
     evaluate: env.AI_MODEL_EVAL,
     extract_memory: env.AI_MODEL_MEMORY,
-    recommend: env.AI_MODEL_MEMORY,
+    recommend: env.AI_MODEL_DIRECTOR ?? env.AI_MODEL_MEMORY,
   };
   switch (env.AI_PROVIDER) {
     case "anthropic":

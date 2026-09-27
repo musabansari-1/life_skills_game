@@ -2,7 +2,7 @@
 
 A voice-first RPG for practising real-world skills. **Conversations are the gameplay.** You have one persistent character; you progress through a simulated world by actually speaking to AI characters who remember you, react to how you treat them, and change the world around you.
 
-The first playable vertical slice is **The Counter Offer**: negotiate a job offer with Emma, a recruiter with hidden constraints you must discover by talking to her. How you negotiate changes your salary, her trust in you, what she remembers, and what happens on your first day.
+V1 is **Career City, season one**: a complete career story in 13 chapters across six acts. You start as a candidate on a screening call, negotiate your offer, and join Nova Labs' platform team. From there you make promises that come back, handle a customer escalation, coach a new hire, and face a three-person crisis. A review decides what comes next. Seven people remember what you said. Mistakes change the story instead of ending it, and the ending reflects your actual run. See `V1-CONTENT-ARCHITECTURE.md` and `V1-CONTENT-REVIEW.md`.
 
 ## Quick start
 

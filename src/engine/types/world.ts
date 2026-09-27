@@ -6,6 +6,8 @@
  * conversations mutate through Consequences (see `./consequences.ts`).
  */
 import { z } from "zod";
+import { CampaignStateSchema } from "../campaign/types";
+import { DirectorStateSchema } from "../director/types";
 
 // ---------- Static content ----------
 
@@ -49,7 +51,7 @@ export const CommitmentSchema = z.object({
   madeInQuestId: z.string(),
   madeAt: z.string(),
   dueBy: z.string().nullable().default(null),
-  status: z.enum(["open", "fulfilled", "broken"]).default("open"),
+  status: z.enum(["open", "fulfilled", "broken", "superseded"]).default("open"),
 });
 export type Commitment = z.infer<typeof CommitmentSchema>;
 
@@ -78,6 +80,8 @@ export const QuestRecordSchema = z.object({
 });
 
 export const WorldStateSchema = z.object({
+  campaign: CampaignStateSchema.prefault({}),
+  director: DirectorStateSchema.prefault({}),
   version: z.number().int().default(1),
   career: CareerStateSchema.prefault({}),
   /** Reputation per domain, -100..100. e.g. { career_city: 12 } */

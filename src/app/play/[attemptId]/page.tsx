@@ -33,6 +33,7 @@ export default async function PlayPage({ params, searchParams }: PageProps<"/pla
       initial={initial}
       quest={scene.quest}
       npc={scene.npc}
+      participants={scene.participants}
       playerName={player.displayName}
       initialMode={sp.mode === "text" ? "text" : "voice"}
       chapter={idx ? { index: idx, total: CAMPAIGN.chapters.length } : null}

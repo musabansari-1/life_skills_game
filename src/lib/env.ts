@@ -21,6 +21,7 @@ const EnvSchema = z.object({
   AI_MODEL_NPC: z.string().optional(),
   AI_MODEL_EVAL: z.string().optional(),
   AI_MODEL_MEMORY: z.string().optional(),
+  AI_MODEL_DIRECTOR: z.string().optional(),
 
   /** Analytics: "console" logs events; "none" is silent. Events are always stored in DB. */
   ANALYTICS_SINK: z.enum(["console", "none"]).default("console"),
