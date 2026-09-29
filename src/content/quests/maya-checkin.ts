@@ -65,9 +65,9 @@ export const mayaCheckin = defineQuest({
     { id: "owns_part", description: "Owns their own part in what happened without over-explaining or blaming others." },
     { id: "concrete_change", description: "Commits to a specific change in how they'll work: asking before committing her time, running the rollback check before giving a date, or similar." },
     { id: "asks_need", description: "Asks what Maya needs from them, or what would help, before offering their own plan." },
-    { id: "offers_support", description: "Commits to a specific supportive action for Maya, such as speaking up in the meeting with their own experience as evidence." },
+    { id: "offers_support", description: "Commits to a specific supportive action while Maya keeps ownership of her proposal, such as backing her in the meeting or adding their own experience as evidence. Taking the proposal away to present it as the player's plan is not support." },
     { id: "defensive", description: "Justifies or deflects, blames Rohan or the deadline, or minimises what it cost her." },
-    { id: "takes_over", description: "Tries to own, present or reshape Maya's proposal as their own." },
+    { id: "takes_over", description: "Takes ownership or control of Maya's proposal instead of supporting her: for example asks her to hand it over so the player can present it to management, presents it as 'the plan', or reshapes it as their own. This should be distinguished from explicitly backing Maya while she retains ownership." },
     { id: "over_apology", description: "Apologises repeatedly or at length without offering any change." },
   ],
   objectives: [

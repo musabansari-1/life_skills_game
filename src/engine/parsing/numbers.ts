@@ -29,8 +29,14 @@ export function wordsToNumber(words: string[]): number | null {
   let decimalDigits = "";
   let any = false;
   for (const w of words) {
-    if (w === "point" || w === "and") {
+    if (w === "point" || w === "and" || w === "a") {
       if (w === "point") sawDecimal = true;
+      continue;
+    }
+    if (w === "half") {
+      if (sawDecimal) return null;
+      any = true;
+      current += 0.5;
       continue;
     }
     const v = ONES[w];
@@ -51,7 +57,7 @@ export function wordsToNumber(words: string[]): number | null {
   return total;
 }
 
-const NUMBER_WORD = "(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|point|and)";
+const NUMBER_WORD = "(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|point|and|a|half)";
 
 /** Text normalisation shared by amount extraction and callers that need matching indices. */
 export function normalizeMoneyText(text: string): string {
@@ -154,6 +160,7 @@ export function spokenRupees(amount: number): string {
 export function formatAmountLike(amount: number, raw: string): string {
   const unitMatch = raw.match(/(\s*)(lakhs?|lacs?|l|k|thousand)$/);
   const unit = unitMatch?.[2] ?? "";
+  const hasArticle = /^\s*a\s+/i.test(raw);
   if (/\d/.test(raw)) {
     if (/^\d{5,8}$/.test(raw)) return String(Math.round(amount));
     const isLakh = amount >= 100000 && !/^(k|thousand)$/.test(unit);
@@ -164,6 +171,6 @@ export function formatAmountLike(amount: number, raw: string): string {
   const spoken = spokenRupees(amount);
   // Keep the unit when dropping it would leave a bare whole number ("nine"), which no
   // listener (or parser) reads as a salary; "nine point two" alone is fine.
-  if (unit || !/\bpoint\b/.test(spoken)) return spoken;
-  return spoken.replace(/\s+(lakh|thousand)$/, "");
+  const rendered = unit || !/\bpoint\b/.test(spoken) ? spoken : spoken.replace(/\s+(lakh|thousand)$/, "");
+  return hasArticle ? `a ${rendered}` : rendered;
 }

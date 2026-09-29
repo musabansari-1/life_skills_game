@@ -47,6 +47,13 @@ const SCENES: Record<string, { flags?: string[]; grades?: Record<string, "succes
     "I know your director is leaning on you for dates, and that's not easy.",
     "Could you check capacity with the team before you commit a date upstairs? And I'll make sure you get a real estimate from me early enough to use it.",
   ] },
+  project_crisis: { flags: ["chapter1.owned_incident", "meridian.trust_restored", "maya.ally", "rohan.took_feedback"], trust: { rohan_mehta: 25, nora_shah: 18, maya_sen: 20 }, lines: [
+    "I committed us before verification was fully clear. That's on me, and I won't set another date until we've heard the customer and capacity constraints.",
+    "Nora, what does Meridian absolutely need to keep working if we don't ship the full rollout today?",
+    "Maya, what can you verify safely today, and what still needs rollback checks?",
+    "Then let's keep the existing reports live and ship only a read-only pilot today. We give up full scope to protect customer continuity and verification capacity.",
+    "I'll own the pilot and the customer update. We review at four after Maya verifies it; if that check fails, we stop and keep the existing service.",
+  ] },
   the_review: { lines: [
     "I'd like to lead the next phase of the Meridian work. In the crisis room I owned the estimate and got Nora and Maya to a plan they could both live with.",
     "To make it work, I'd want Maya's verification time agreed up front, and a proper review at the end of the quarter.",

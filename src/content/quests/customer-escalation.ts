@@ -91,7 +91,7 @@ export const customerEscalation = defineQuest({
     return lines;
   },
   semanticFeatures: [
-    { id: "plain_account", description: "Explains what happened and what it meant for Meridian in plain, non-technical language, owning Nova's or their own part without blaming a colleague." },
+    { id: "plain_account", description: "Gives a plain factual account of what failed or the concrete impact and explicitly owns Nova's or their own part without blaming a colleague. A concise account such as 'we broke 3,000 records, restored them Monday, and that failure was on our process' qualifies even without a separate impact sentence." },
     { id: "risk_question", description: "Asks Vikram what his team needs, what month-end depends on, or what would hurt most." },
     { id: "honest_scope", description: "Tells Meridian plainly what will not be delivered, or not yet (for example the real-time dashboard), and why, with what they get instead." },
     { id: "protection_plan", description: "Proposes a concrete protection for Meridian's month-end close: a change freeze, a verified export before the close, a manual fallback, or a named contact on the day." },

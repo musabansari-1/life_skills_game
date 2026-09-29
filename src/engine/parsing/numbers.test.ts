@@ -11,6 +11,7 @@ describe("wordsToNumber", () => {
     expect(wordsToNumber(["ten"])).toBe(10);
     expect(wordsToNumber(["fifty", "five"])).toBe(55);
     expect(wordsToNumber(["nine", "point", "seven"])).toBe(9.7);
+    expect(wordsToNumber(["nine", "and", "a", "half"])).toBe(9.5);
     expect(wordsToNumber(["nine", "seven"])).toBe(97);
     expect(wordsToNumber(["banana"])).toBeNull();
   });
@@ -21,6 +22,7 @@ describe("extractRupeeAmounts", () => {
     const a = (s: string) => extractRupeeAmounts(s).map((x) => x.amount);
     expect(a("I can take base to 9.7 lakh")).toEqual([970000]);
     expect(a("ten lakh is above the band")).toEqual([1000000]);
+    expect(a("nine and a half lakh base")).toEqual([950000]);
     expect(a("a joining bonus of forty thousand")).toEqual([40000]);
     expect(a("fifty to sixty thousand on top")).toEqual([50000, 60000]);
     expect(a("₹9,70,000 base")).toEqual([970000]);

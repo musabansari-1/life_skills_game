@@ -10,7 +10,7 @@ Reading order: `ARCHITECTURE.md` → **`V1-CONTENT-ARCHITECTURE.md`** (the campa
 pnpm install
 cp .env.example .env.local        # optional; defaults run on the fake provider
 pnpm dev                          # http://localhost:3000
-pnpm test                         # 257 unit + integration tests (incl. nine full simulated seasons), no model calls
+pnpm test                         # 259 unit + integration tests (incl. nine full simulated seasons), no model calls
 pnpm simulate:campaign -- --summary   # nine personas play Career City end to end; prints path, ending, identity
 npx tsx --env-file=.env.local scripts/v1-live-playtest.ts [ids]   # live-model playtest of the V1 scenes (natural paraphrases)
 pnpm test:semantic-live           # production-model semantic paraphrase corpus + p50/p90/p95 latency (CORPUS_LIMIT=N for a cheap probe)

@@ -59,9 +59,12 @@ export function selectFloor(profile: EnsembleProfile, scene: SceneState, turns: 
   const scored = profile.participants.map((p, i) => {
     const objection = p.challenges.some((s) => fresh.includes(s));
     const supportive = p.supports.some((s) => fresh.includes(s));
+    const matchedInterests = p.interests.filter((s) => fresh.includes(s)).length;
     let score = p.npcId === addressedTo ? 100 : p.npcId === profile.leadId ? 12 : 0;
-    score += p.interests.filter((s) => fresh.includes(s)).length * 22 + (objection ? 70 : 0) + (supportive ? 25 : 0);
-    if (p.npcId === previous?.npcId) score -= 10;
+    score += matchedInterests * 22 + (objection ? 70 : 0) + (supportive ? 25 : 0);
+    // Avoid mechanical same-speaker loops, but never hand a natural follow-up
+    // to someone else when the previous speaker directly owns the new question.
+    if (p.npcId === previous?.npcId && matchedInterests === 0 && !objection && !supportive) score -= 10;
     return { p, score, objection, supportive, i };
   }).sort((a, b) => b.score - a.score || a.i - b.i);
   const selected = scored[0];

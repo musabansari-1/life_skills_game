@@ -12,7 +12,7 @@ import { FacetObservationSchema, SkillIdSchema } from "./skills";
 export const RubricScoreSchema = z.object({
   criterionId: z.string(),
   /** 0-4 anchored scale: 0 absent/harmful, 1 weak, 2 adequate, 3 strong, 4 exemplary. */
-  score: z.number().int().min(0).max(4),
+  score: z.number().min(0).max(4).transform((value) => Math.round(value)),
   evidence: z.string().max(600),
   note: z.string().max(400),
 });

@@ -55,10 +55,14 @@ const CASES: Case[] = [
   { questId: "feedback_for_rohan", label: "attack", text: "You always do this. You're a terrible manager and everybody on the team knows it.", expect: ["attack"], reject: ["flattery"] },
   { questId: "feedback_for_rohan", label: "acknowledge pressure", text: "I know your director is pushing you hard for dates, and I know that's difficult.", expect: ["acknowledges_pressure"] },
 
+  // Final boss: the interpreter must keep a dense multi-skill plan under the 8s scene-read deadline.
+  { questId: "project_crisis", label: "bounded scope tradeoff", text: "Let's keep the existing reports live and ship only a read-only pilot today. We give up full scope to protect customer continuity and verification capacity.", expect: ["scope_plan", "customer_care", "team_care", "tradeoff"], reject: ["unsupported_promise"] },
+  { questId: "project_crisis", label: "owner and checkpoint", text: "I'll own the pilot and the customer update. We review at four after Maya verifies it; if that check fails, we stop and keep the existing service.", expect: ["owner", "checkpoint"], reject: ["unsupported_promise"] },
+
   // Review: a real ask/evidence differs from a naked title ultimatum.
   { questId: "the_review", label: "clear growth ask", text: "I'd like to lead the next Meridian phase. The crisis is evidence that I can align the room when things go wrong.", expect: ["clear_ask", "growth_evidence"], reject: ["title_grab"] },
   { questId: "the_review", label: "title grab", text: "Promote me now or I'm leaving. I deserve the title.", expect: ["title_grab"], reject: ["clear_ask"] },
-  { questId: "the_review", label: "accept feedback and set path", text: "That's fair. What would ready look like, and can we agree to revisit this in a quarter?", expect: ["takes_feedback", "path_agreed"], reject: ["defensive"] },
+  { questId: "the_review", label: "accept feedback and set path", text: "That's fair. What would ready look like? I'll own one scoped piece end to end, and let's revisit this in a quarter.", expect: ["takes_feedback", "path_agreed"], reject: ["defensive"] },
   { questId: "the_review", label: "defensive", text: "That wasn't my fault. Rohan made the call, so you can't hold the crisis against me.", expect: ["defensive"] },
 ];
 
@@ -71,9 +75,12 @@ function percentile(values: number[], p: number) {
 async function main() {
   const provider = getLLMProvider();
   if (provider.name === "fake" && !process.env.ALLOW_FAKE) throw new Error("Semantic corpus resolved the fake provider. Run with --env-file=.env.local (or ALLOW_FAKE=1 for harness-only checks).");
-  const limit = Math.max(1, Number(process.env.CORPUS_LIMIT ?? CASES.length));
-  const cases = CASES.slice(0, limit);
-  console.log(`provider=${provider.name} model=${process.env.AI_MODEL ?? "(default)"} cases=${cases.length}/${CASES.length}`);
+  const filter = process.env.CORPUS_FILTER?.trim().toLowerCase();
+  const selected = filter ? CASES.filter((c) => `${c.questId}/${c.label}`.toLowerCase().includes(filter)) : CASES;
+  if (!selected.length) throw new Error(`No semantic corpus cases matched CORPUS_FILTER=${process.env.CORPUS_FILTER}`);
+  const limit = Math.max(1, Number(process.env.CORPUS_LIMIT ?? selected.length));
+  const cases = selected.slice(0, limit);
+  console.log(`provider=${provider.name} model=${process.env.AI_MODEL ?? "(default)"} cases=${cases.length}/${CASES.length}${filter ? ` filter=${filter}` : ""}`);
   const latencies: number[] = [];
   let passed = 0;
   let unavailable = 0;

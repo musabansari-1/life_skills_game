@@ -27,8 +27,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   private body(req: CompletionRequest, stream: boolean) {
+    const model = this.modelFor(req.task);
     const body: Record<string, unknown> = {
-      model: this.modelFor(req.task),
+      model,
       max_tokens: req.maxTokens,
       temperature: req.temperature ?? 0.7,
       stream,
@@ -38,9 +39,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (req.jsonMode) body.response_format = { type: "json_object" };
     if (stream) body.stream_options = { include_usage: true };
     // Reasoning models spend the output budget on hidden thinking. Conversational
-    // turns want none; structured tasks want a little. (OpenRouter "reasoning" param;
-    // ignored by endpoints that don't support it.)
-    body.reasoning = req.effort === "high" ? { effort: "low" } : { enabled: false };
+    // turns usually want none; structured tasks want a little. Some OpenRouter
+    // endpoints (notably Space Bunny) require reasoning and reject `enabled:false`,
+    // so let those models use their endpoint default unless high effort is requested.
+    const requiresReasoning = /^stealth\/space-bunny/i.test(model);
+    if (requiresReasoning) body.reasoning = { effort: "low" };
+    else if (req.effort === "high") body.reasoning = { effort: "low" };
+    else body.reasoning = { enabled: false };
     return body;
   }
 

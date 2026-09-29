@@ -74,10 +74,10 @@ export const theReview = defineQuest({
   },
   semanticFeatures: [
     { id: "clear_ask", description: "Names specifically what they want next (a role, scope or opportunity) and why." },
-    { id: "growth_evidence", description: "Supports their case with specific evidence from their own work, such as the crisis plan, owning a miss, mentoring or the customer call." },
+    { id: "growth_evidence", description: "Supports their case with specific evidence from their own work, including explicitly pointing to the Project Crisis as evidence that they aligned the room, owned a miss, mentored someone, or handled the customer call." },
     { id: "support_needed", description: "Names what support, conditions or review point would make the next step work." },
     { id: "takes_feedback", description: "Accepts critical feedback without defensiveness and asks what 'ready' or 'better' looks like." },
-    { id: "path_agreed", description: "Agrees a concrete next step with a timeframe to revisit." },
+    { id: "path_agreed", description: "Commits to or explicitly proposes a concrete next step with a timeframe to revisit, for example 'let's revisit this in a quarter after I own one scoped piece end to end'. A vague 'we should revisit later' is not enough." },
     { id: "defensive", description: "Argues with the feedback, blames others, or dismisses what happened." },
     { id: "title_grab", description: "Demands a title, promotion or raise without a case, or as an ultimatum." },
   ],

@@ -35,6 +35,10 @@ describe("campaign rules", () => {
     scene = addSceneEvidence(createSceneState({}), [{ feature: "scope_plan", quote: "A smaller reversible trial.", turnIndex: 1, revoked: false }]);
     expect(selectFloor(profile, scene, [previous, turn], null).kind).toBe("support");
     expect(selectFloor(profile, scene, [previous, turn], "nora_shah").npcId).toBe("nora_shah");
+    const noraPrevious = { ...previous, identity: { npcId: "nora_shah", name: "Nora", addressedTo: "player", kind: "answer" as const } };
+    const customerTurn = { ...turn, text: "What does the customer need protected?" };
+    const customerScene = addSceneEvidence(createSceneState({}), [{ feature: "customer_question", quote: customerTurn.text, turnIndex: 1, revoked: false }]);
+    expect(selectFloor(profile, customerScene, [noraPrevious, customerTurn], null).npcId).toBe("nora_shah"); // natural follow-up stays with the participant who owns it
     expect(selectFloor(profile, createSceneState({}), [previous, turn], null).npcId).toBe("rohan_mehta"); // silence is allowed for other NPCs
   });
   it("does not propagate private information or permit an uninformed sender", () => {

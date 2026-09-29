@@ -66,6 +66,9 @@ describe("Counter Offer speech gate", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.rewrite).toBe("I can add a joining bonus of sixty thousand.");
     expect(gate("I can add a joining bonus of fifty thousand.", ctx)).toEqual({ ok: true });
+    const lakh = gate("I can do a one lakh joining bonus.", ctx);
+    expect(lakh.ok).toBe(false);
+    if (!lakh.ok) expect(lakh.rewrite).toBe("I can do a sixty thousand joining bonus.");
   });
 
   it("gate and speech inference agree: the rewritten sentence records exactly the cap", () => {
@@ -89,6 +92,7 @@ describe("live lines: what Emma says is what is recorded", () => {
   it("her own figure is an offer whatever the phrasing", () => {
     const ctx = ctxWith({ turnCap: 950000, highestAsk: 950000 }, { maxBase: 970000 });
     expect(infer("I can meet you partway — nine point two.", ctx)).toEqual({ base: 920000 });
+    expect(infer("I can move base to nine and a half lakh.", ctx)).toEqual({ base: 950000 });
     expect(infer("Nine point seven is the most I can put on base for this level, and that's already over what I'd normally do.", ctx)).toEqual({ base: 970000 });
     expect(infer("Nine point three is the most I can stretch to today.", ctx)).toEqual({ base: 930000 });
     expect(infer("I can do nine point two, not nine point five.", ctx)).toEqual({ base: 920000 });
@@ -149,6 +153,11 @@ describe("live lines: sealing the deal", () => {
     g.push("Great, that's the move. Let me lock in nine point two five base plus a sixty thousand joining bonus, and I'll send the paperwork over today.", true);
     expect(g.text).toBe("Great, that's the move.");
     expect(counterOffer.scene.inferMovesFromSpeech!(g.text, ctx as never).proposal).toEqual({});
+
+    const observed = ctxWith({ currentBase: 950000, currentSigningBonus: 0, accepted: true, turnCap: 950000 });
+    const bad = gate("I'll put through nine and a half lakh base with an eight point five lakh joining bonus.", observed);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.rewrite).toBeNull();
   });
   it("an agreed bonus is confirmed at its agreed amount", () => {
     const ctx = ctxWith({ currentBase: 925000, currentSigningBonus: 40000, accepted: true, turnCap: 925000 }, { signingBonusMax: 60000 });

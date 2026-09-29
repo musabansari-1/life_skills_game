@@ -108,11 +108,48 @@ const NOT_AN_OFFER_RE = /\b(above|beyond|past|more than|higher than|over what|to
 /** The figure belongs to the player ("you asked for ten", "your number", "what you told me"). */
 const ATTRIBUTED_RE = /\b(you|you'?re|you'?ve|your)\b.{0,30}\b(asked|ask|asking|said|say|mentioned|want|wanted|told|hoping|looking for|had in mind|named|number|figure|expect|expected)\b|\basked for\b|\byour (ask|number|figure|floor|minimum)\b/;
 const FIGURE_WORKS_RE = /\b(works|is fine|is doable|we can do that|i can make that (happen|work)|is where (?:i|we) can land|(?:i|we) can land (?:there|on that)|done|agreed|you'?ve got it|it is|it'?s a deal|you have it|sounds good|let'?s go with|deal)\b/;
+const BONUS_MARKER_RE = /(joining|sign[- ]?on|signing)\s*bonus|one[- ]time\s+(bonus|payment)|sign[- ]?on\b/g;
+
+/** Nearest money figure explicitly attached to a joining/sign-on bonus phrase. */
+function bonusFigure(sentence: string, amounts = extractRupeeAmounts(sentence, { salaryContext: true })): RupeeAmount | null {
+  const norm = normalizeMoneyText(sentence);
+  const markers = [...norm.matchAll(BONUS_MARKER_RE)];
+  if (!markers.length) return null;
+  const candidates = amounts.filter((a) => a.amount >= 10000);
+  const distanceTo = (figure: RupeeAmount, marker: RegExpMatchArray) => {
+    const start = figure.index;
+    const end = start + figure.raw.length;
+    const ms = marker.index ?? 0;
+    const me = ms + marker[0].length;
+    return end < ms ? ms - end : me < start ? start - me : 0;
+  };
+  // Range extraction ("fifty to sixty thousand") emits both bounds at the
+  // same source index. If that range is attached to the bonus, the upper bound
+  // is the amount Emma is audibly offering.
+  for (const figure of candidates) {
+    const sameRange = candidates.filter((a) => a.index === figure.index);
+    if (sameRange.length > 1 && sameRange.some((a) => markers.some((m) => distanceTo(a, m) <= 24))) {
+      return sameRange.reduce((max, a) => (a.amount > max.amount ? a : max));
+    }
+  }
+  let best: { figure: RupeeAmount; distance: number } | null = null;
+  for (const figure of candidates) {
+    for (const marker of markers) {
+      const distance = distanceTo(figure, marker);
+      if (distance > 24) continue;
+      if (!best || distance < best.distance || (distance === best.distance && figure.amount > best.figure.amount)) best = { figure, distance };
+    }
+  }
+  return best?.figure ?? null;
+}
 
 /** Salary figures a sentence states as fact, not negated, questioned or attributed to the player. */
 function confirmedFigures(sentence: string): RupeeAmount[] {
   const withCommas = sentence.toLowerCase().replace(/₹/g, " rs ");
-  return extractRupeeAmounts(sentence, { salaryContext: true })
+  const amounts = extractRupeeAmounts(sentence, { salaryContext: true });
+  const bonus = bonusFigure(sentence, amounts);
+  return amounts
+    .filter((a) => !bonus || a.index !== bonus.index || a.amount !== bonus.amount)
     .filter((a) => a.raw && (a.unit === "lakh" || a.amount >= 500000))
     .filter((a) => {
       const { clause, question } = clauseAt(withCommas, toCommaIndex(withCommas, a.index));
@@ -163,12 +200,8 @@ function readOfferSpeech(speech: string, { hidden, scene }: SceneContext<Counter
   if (/(rohan|hiring manager|the team) (was|were|is|are) (really )?(impressed|keen|excited)/.test(s)) reveal.push("manager_keen");
 
   const amounts = extractRupeeAmounts(speech, { salaryContext: true });
-  const salaryFigures = amounts.filter((a) => a.unit === "lakh" || a.amount >= 500000);
-  let bonus: RupeeAmount | null = null;
-  if (mentionsBonus) {
-    const candidates = amounts.filter((a) => a.amount >= 10000 && a.amount <= 200000 && a.unit !== "lakh");
-    if (candidates.length) bonus = candidates.reduce((m, a) => (a.amount > m.amount ? a : m));
-  }
+  const bonus = mentionsBonus ? bonusFigure(speech, amounts) : null;
+  const salaryFigures = amounts.filter((a) => (a.unit === "lakh" || a.amount >= 500000) && (!bonus || a.index !== bonus.index || a.amount !== bonus.amount));
 
   const norm = normalizeMoneyText(speech);
   // Clause boundaries need the commas that normalizeMoneyText drops ("9,50,000" → "950000").
